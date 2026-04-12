@@ -133,26 +133,77 @@ def create_app(ypir_host: str, ypir_port: int, tiles_dir: str) -> Flask:
             return jsonify({"error": str(exc)}), 500
 
     # ------------------------------------------------------------------ #
-    # Basemap tiles (static, no PIR — served directly as gzipped PBF)
+    # Basemap tiles (in the clear — no PIR needed at low zoom).
+    #
+    # Local dataset basemap takes priority. For tiles outside the regional
+    # coverage (zoom-out far enough to leave the built region), fall back
+    # to OpenFreeMap's public OpenMapTiles-schema tile server so the map
+    # still shows the rest of the world instead of blank tiles.
+    #
+    # OFM_BASEMAP_URL can point at a pinned snapshot; the default tracks
+    # their rolling "latest" bucket.
     # ------------------------------------------------------------------ #
 
     basemap_dir = os.path.join(tiles_dir, "basemap")
+    ofm_tilejson_url = os.environ.get(
+        "OFM_TILEJSON_URL",
+        "https://tiles.openfreemap.org/planet",
+    )
+
+    # OpenFreeMap publishes rolling snapshot paths; the versioned path is
+    # in their TileJSON. Resolve it lazily at first use, then cache.
+    ofm_template = {"url": None}
+
+    def resolve_ofm_template():
+        if ofm_template["url"] is not None:
+            return ofm_template["url"]
+        try:
+            meta = requests.get(ofm_tilejson_url, timeout=5).json()
+            tiles = meta.get("tiles", [])
+            if tiles:
+                ofm_template["url"] = tiles[0]
+                logger.info("OFM basemap: using %s", tiles[0])
+        except Exception as exc:
+            logger.warning("Could not resolve OFM TileJSON (%s): %s",
+                           ofm_tilejson_url, exc)
+        return ofm_template["url"]
 
     @app.route("/basemap/<int:z>/<int:x>/<int:y>.pbf")
     def basemap_tile(z, x, y):
         tile_path = os.path.join(basemap_dir, str(z), str(x), f"{y}.pbf")
-        if not os.path.isfile(tile_path):
-            return Response(b"", status=404)
-        with open(tile_path, "rb") as f:
-            data = f.read()
-        return Response(
-            data,
-            content_type="application/x-protobuf",
-            headers={
-                "Content-Encoding": "gzip",
-                "Cache-Control": "public, max-age=86400",
-            },
-        )
+        if os.path.isfile(tile_path):
+            with open(tile_path, "rb") as f:
+                data = f.read()
+            return Response(
+                data,
+                content_type="application/x-protobuf",
+                headers={
+                    "Content-Encoding": "gzip",
+                    "Cache-Control": "public, max-age=86400",
+                },
+            )
+
+        # Fallback: public OpenMapTiles tile server.
+        template = resolve_ofm_template()
+        if template is None:
+            return Response(b"", status=204)
+        try:
+            upstream = template.format(z=z, x=x, y=y)
+            resp = requests.get(upstream, timeout=5)
+            if resp.status_code != 200 or not resp.content:
+                return Response(b"", status=204)
+            return Response(
+                resp.content,
+                content_type="application/x-protobuf",
+                headers={
+                    # OpenFreeMap already returns gzipped pbf.
+                    "Content-Encoding": resp.headers.get("Content-Encoding", "gzip"),
+                    "Cache-Control": "public, max-age=86400",
+                },
+            )
+        except Exception as exc:
+            logger.warning("OFM basemap fetch failed for %d/%d/%d: %s", z, x, y, exc)
+            return Response(b"", status=204)
 
     # ------------------------------------------------------------------ #
     # Shared JS modules (served from pir-map-shared/frontend/)

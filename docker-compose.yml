@@ -1,0 +1,37 @@
+services:
+  workbench:
+    build: .
+    image: ypir-tileserver-workbench:latest
+    # Pinned to x86_64 for now: upstream spiral-rs still requires AVX-2
+    # target_feature at compile time, so aarch64 builds need the
+    # planned poly.rs fallback patches before this can drop.
+    # On Apple Silicon, docker auto-uses Rosetta 2 for this platform,
+    # which emulates AVX-2 (no AVX-512) at an acceptable speed.
+    platform: linux/amd64
+    working_dir: /workspace
+    volumes:
+      # Source on host is authoritative — all code edits happen outside
+      # the container and are picked up live.
+      - .:/workspace
+      # Build artifacts live in named volumes, not bind mounts, because
+      # Cargo's incremental state is sensitive to FS semantics (the
+      # bind-mounted host FS is fine on Linux but causes problems on
+      # Mac via the VM layer). These also survive `docker compose down`.
+      - cargo-target-server:/workspace/server/target
+      - cargo-target-wasm:/workspace/wasm/target
+      - cargo-registry:/usr/local/cargo/registry
+    ports:
+      - "8009:8009"   # Flask proxy (what users open in a browser)
+      - "8084:8084"   # YPIR Rust server (direct access, rarely needed)
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      # Set FORCE_PORTABLE=1 or FORCE_AVX512=1 to override auto-detect.
+      - FORCE_PORTABLE=${FORCE_PORTABLE:-}
+      - FORCE_AVX512=${FORCE_AVX512:-}
+      # DATASET selects a directory under ./datasets/. Empty = synthetic.
+      - DATASET=${DATASET:-}
+
+volumes:
+  cargo-target-server:
+  cargo-target-wasm:
+  cargo-registry:

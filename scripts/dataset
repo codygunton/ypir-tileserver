@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+#
+# Dataset pipeline CLI — glue over the scripts in this directory.
+#
+# Typical flow for a new dataset:
+#
+#   ./scripts/dataset fetch-osm us-northeast
+#   ./scripts/dataset build ne-us-z9-13-tiered \
+#       --region us-northeast \
+#       --bbox -80.6,38.9,-66.9,47.5 \
+#       --zoom-range 9-13
+#
+# Written in bash so the workbench container needs nothing beyond
+# curl + python3 + sqlite3 + java (for the underlying steps).
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA="$ROOT/data"
+DATASETS="$ROOT/datasets"
+
+# ────────────────────────────────────────────────────────────────────
+# Geofabrik region catalog. Extend as needed.
+# ────────────────────────────────────────────────────────────────────
+region_url() {
+    case "$1" in
+        world)            echo "https://download.geofabrik.de/planet-latest.osm.pbf" ;;
+        north-america)    echo "https://download.geofabrik.de/north-america-latest.osm.pbf" ;;
+        us-northeast)     echo "https://download.geofabrik.de/north-america/us-northeast-latest.osm.pbf" ;;
+        us-midwest)       echo "https://download.geofabrik.de/north-america/us-midwest-latest.osm.pbf" ;;
+        us-south)         echo "https://download.geofabrik.de/north-america/us-south-latest.osm.pbf" ;;
+        us-west)          echo "https://download.geofabrik.de/north-america/us-west-latest.osm.pbf" ;;
+        us-california)    echo "https://download.geofabrik.de/north-america/us/california-latest.osm.pbf" ;;
+        us-new-york)      echo "https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf" ;;
+        europe)           echo "https://download.geofabrik.de/europe-latest.osm.pbf" ;;
+        europe-germany)   echo "https://download.geofabrik.de/europe/germany-latest.osm.pbf" ;;
+        europe-france)    echo "https://download.geofabrik.de/europe/france-latest.osm.pbf" ;;
+        europe-uk)        echo "https://download.geofabrik.de/europe/great-britain-latest.osm.pbf" ;;
+        asia-japan)       echo "https://download.geofabrik.de/asia/japan-latest.osm.pbf" ;;
+        *)                echo "" ;;
+    esac
+}
+
+cmd_regions() {
+    cat <<'EOF'
+Supported region names (Geofabrik extracts):
+  world             (~70 GB; prefer a smaller regional extract)
+  north-america     (~17 GB)
+  us-northeast      (~400 MB)
+  us-midwest
+  us-south
+  us-west
+  us-california
+  us-new-york
+  europe
+  europe-germany
+  europe-france
+  europe-uk
+  asia-japan
+
+To add more: edit the region_url() case in scripts/dataset.
+EOF
+}
+
+cmd_list() {
+    if [[ ! -d "$DATASETS" ]] || [[ -z "$(ls -A "$DATASETS" 2>/dev/null)" ]]; then
+        echo "No built datasets yet. Try:  $0 build --help"
+        return
+    fi
+    echo "Built datasets under $DATASETS:"
+    for d in "$DATASETS"/*/; do
+        local name=$(basename "$d")
+        local size=$(du -sh "$d" 2>/dev/null | cut -f1)
+        local slots="?"
+        [[ -f "$d/tile_mapping.json" ]] && slots=$(python3 -c \
+            "import json;m=json.load(open('$d/tile_mapping.json'));print(m.get('num_pir_slots',m.get('num_tiles','?')))")
+        printf "  %-30s  %6s  %s slots\n" "$name" "$size" "$slots"
+    done
+}
+
+cmd_fetch_osm() {
+    local region="${1:?region name required; try: $0 regions}"
+    local url=$(region_url "$region")
+    if [[ -z "$url" ]]; then
+        echo "Unknown region: $region" >&2
+        cmd_regions >&2
+        exit 1
+    fi
+    mkdir -p "$DATA"
+    local out="$DATA/$region.osm.pbf"
+    if [[ -f "$out" ]]; then
+        echo "==> Already have $out ($(du -h "$out" | cut -f1)). Remove it to re-download."
+        return
+    fi
+    echo "==> Downloading $region from Geofabrik..."
+    echo "    $url"
+    curl -L --progress-bar -C - -o "$out" "$url"
+    echo "==> Wrote $out ($(du -h "$out" | cut -f1))"
+}
+
+cmd_run_planetiler() {
+    local region="${1:?region name required}"
+    local input="$DATA/$region.osm.pbf"
+    local output="$DATA/$region.mbtiles"
+    if [[ ! -f "$input" ]]; then
+        echo "==> $input not found. Run: $0 fetch-osm $region" >&2
+        exit 1
+    fi
+    if [[ -f "$output" ]]; then
+        echo "==> Already have $output. Remove it to rebuild."
+        return
+    fi
+    local jar="$DATA/planetiler.jar"
+    if [[ ! -f "$jar" ]]; then
+        echo "==> Downloading planetiler.jar..."
+        curl -L --progress-bar -o "$jar" \
+            https://github.com/onthegomap/planetiler/releases/latest/download/planetiler.jar
+    fi
+    echo "==> Running Planetiler on $region (10-30 min typical)..."
+    cd "$DATA"
+    java -Xmx8g -jar "$jar" \
+        --osm-path="$input" \
+        --output="$output" \
+        --download --force
+    echo "==> Wrote $output ($(du -h "$output" | cut -f1))"
+}
+
+cmd_build() {
+    local name=""
+    local region=""
+    local bbox=""
+    local zoom_range="9-13"
+    local tile_size="20480"
+    local basemap_max_zoom="8"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --region)           region="$2"; shift 2 ;;
+            --bbox)             bbox="$2"; shift 2 ;;
+            --zoom-range)       zoom_range="$2"; shift 2 ;;
+            --tile-size)        tile_size="$2"; shift 2 ;;
+            --basemap-max-zoom) basemap_max_zoom="$2"; shift 2 ;;
+            -h|--help)
+                cat <<EOF
+Usage: $0 build <name> --region <r> --bbox <w,s,e,n> [--zoom-range 9-13] [--tile-size 20480]
+
+  <name>              Output directory under datasets/<name>/
+  --region            Geofabrik region name ($0 regions to list)
+  --bbox              west,south,east,north (decimal degrees)
+  --zoom-range        PIR-protected zoom range (default 9-13)
+  --tile-size         PIR slot size in bytes (default 20480)
+  --basemap-max-zoom  Max zoom for the in-the-clear basemap layer (default 8)
+
+Example (reproduces the NE-US demo dataset):
+  $0 fetch-osm us-northeast
+  $0 build ne-us-z9-13-tiered \\
+      --region us-northeast \\
+      --bbox -80.6,38.9,-66.9,47.5 \\
+      --zoom-range 9-13
+EOF
+                return ;;
+            *)
+                if [[ -z "$name" ]]; then name="$1"; shift
+                else echo "Unknown arg: $1" >&2; exit 1; fi ;;
+        esac
+    done
+
+    [[ -n "$name"   ]] || { echo "<name> required" >&2; exit 1; }
+    [[ -n "$region" ]] || { echo "--region required" >&2; exit 1; }
+    [[ -n "$bbox"   ]] || { echo "--bbox required" >&2; exit 1; }
+
+    # 1. OSM → MBTiles (skips if already done)
+    cmd_fetch_osm "$region"
+    cmd_run_planetiler "$region"
+
+    # 2. MBTiles → PIR tiles.bin
+    local mbtiles="$DATA/$region.mbtiles"
+    local out="$DATASETS/$name"
+    mkdir -p "$out"
+    local min_zoom="${zoom_range%%-*}"
+    local max_zoom="${zoom_range##*-}"
+    IFS=',' read -r W S E N <<< "$bbox"
+
+    echo "==> Extracting PIR tiles (z${min_zoom}-z${max_zoom}, ${tile_size}B slots)..."
+    python3 "$ROOT/scripts/prepare_tiles.py" \
+        --input "$mbtiles" \
+        --output "$out" \
+        --min-zoom "$min_zoom" \
+        --max-zoom "$max_zoom" \
+        --tile-size "$tile_size" \
+        --bbox "$W,$S,$E,$N"
+
+    # 3. MBTiles → basemap/{z}/{x}/{y}.pbf
+    echo "==> Extracting basemap (z0-z${basemap_max_zoom})..."
+    python3 "$ROOT/scripts/03-extract-basemap.py" \
+        --input "$mbtiles" \
+        --output "$out/basemap" \
+        --min-zoom 0 \
+        --max-zoom "$basemap_max_zoom"
+
+    cat > "$out/dataset.json" <<EOF
+{
+  "name": "$name",
+  "region": "$region",
+  "bbox": [$W, $S, $E, $N],
+  "pir_zoom_range": [$min_zoom, $max_zoom],
+  "basemap_zoom_range": [0, $basemap_max_zoom],
+  "tile_size_bytes": $tile_size
+}
+EOF
+
+    echo ""
+    echo "==> Dataset ready at: $out"
+    du -sh "$out"/* 2>/dev/null | sed 's/^/    /'
+    echo ""
+    echo "Run it:  DATASET=$name docker compose up"
+}
+
+cmd_clean() {
+    local name="${1:?dataset name required}"
+    local dir="$DATASETS/$name"
+    [[ -d "$dir" ]] || { echo "No dataset: $name" >&2; exit 1; }
+    echo "==> Removing $dir"
+    rm -rf "$dir"
+}
+
+case "${1:-help}" in
+    list|ls)            shift; cmd_list "$@" ;;
+    regions)            shift; cmd_regions "$@" ;;
+    fetch-osm)          shift; cmd_fetch_osm "$@" ;;
+    run-planetiler)     shift; cmd_run_planetiler "$@" ;;
+    build)              shift; cmd_build "$@" ;;
+    clean|rm)           shift; cmd_clean "$@" ;;
+    help|-h|--help|"")
+        cat <<EOF
+Usage: $0 <command> [args]
+
+  list                          Show built datasets
+  regions                       Show supported Geofabrik region names
+  fetch-osm <region>            Download an OSM PBF extract
+  run-planetiler <region>       Build an MBTiles from the PBF
+  build <name> [opts]           End-to-end: OSM -> MBTiles -> PIR + basemap
+                                 (runs fetch-osm + run-planetiler as needed)
+  clean <name>                  Delete a built dataset
+
+Examples:
+  $0 regions
+  $0 build --help
+  $0 build ne-us-z9-13-tiered --region us-northeast \\
+      --bbox -80.6,38.9,-66.9,47.5 --zoom-range 9-13
+EOF
+        ;;
+    *) echo "Unknown command: $1"; exit 1 ;;
+esac

@@ -8,7 +8,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 spiral-rs = { path = "../spiral-rs" }
-wasm-bindgen = "0.2"
+# Pinned because wasm-pack's bundled wasm-bindgen CLI has to match this
+# exactly; letting Cargo pull the newest 0.2.x drifts ahead of what
+# wasm-pack 0.13.x ships. Bump both together when upgrading.
+wasm-bindgen = "=0.2.92"
 getrandom = { version = "0.2", features = ["js"] }
 serde_json = "1.0"
 console_error_panic_hook = "0.1"
