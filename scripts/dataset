@@ -216,6 +216,17 @@ EOF
     echo "Run it:  DATASET=$name docker compose up"
 }
 
+cmd_quickstart() {
+    # Canonical demo dataset: Northeast US, z9-z13, 20 KB PIR slots.
+    # This is what the docker compose "no dataset found" message
+    # points users at — one command to build a demo-ready dataset
+    # without memorizing the bbox and zoom range.
+    cmd_build ne-us-z9-13-tiered \
+        --region us-northeast \
+        --bbox -80.6,38.9,-66.9,47.5 \
+        --zoom-range 9-13
+}
+
 cmd_clean() {
     local name="${1:?dataset name required}"
     local dir="$DATASETS/$name"
@@ -225,6 +236,7 @@ cmd_clean() {
 }
 
 case "${1:-help}" in
+    quickstart)         shift; cmd_quickstart "$@" ;;
     list|ls)            shift; cmd_list "$@" ;;
     regions)            shift; cmd_regions "$@" ;;
     fetch-osm)          shift; cmd_fetch_osm "$@" ;;
@@ -235,6 +247,8 @@ case "${1:-help}" in
         cat <<EOF
 Usage: $0 <command> [args]
 
+  quickstart                    Build the canonical NE-US demo dataset
+                                 (us-northeast, z9-z13, 20 KB slots)
   list                          Show built datasets
   regions                       Show supported Geofabrik region names
   fetch-osm <region>            Download an OSM PBF extract
@@ -244,6 +258,7 @@ Usage: $0 <command> [args]
   clean <name>                  Delete a built dataset
 
 Examples:
+  $0 quickstart
   $0 regions
   $0 build --help
   $0 build ne-us-z9-13-tiered --region us-northeast \\

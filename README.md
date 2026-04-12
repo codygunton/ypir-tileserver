@@ -26,12 +26,9 @@ cd ypir-tileserver
 # Build the workbench image (~5 min, one time).
 docker compose build
 
-# Build a dataset (required, ~30 min; uses Geofabrik OSM + Planetiler).
-# This produces datasets/ne-us-z9-13-tiered/{tiles.bin, basemap/, ...}:
-docker compose run --rm workbench ./scripts/dataset build ne-us-z9-13-tiered \
-    --region us-northeast \
-    --bbox -80.6,38.9,-66.9,47.5 \
-    --zoom-range 9-13
+# Build the default NE-US dataset (~30 min; uses Geofabrik OSM + Planetiler).
+# Produces datasets/ne-us-z9-13-tiered/{tiles.bin, basemap/, ...}.
+docker compose run --rm workbench ./scripts/dataset quickstart
 
 # Start the demo. First run builds wasm + server (~3 min); subsequent
 # runs are instant.

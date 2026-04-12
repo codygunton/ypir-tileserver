@@ -86,24 +86,22 @@ else
 fi
 
 if [[ -z "$TILES_DIR" ]]; then
-    cat >&2 <<EOF
+    cat >&2 <<'EOF'
 
 ==> No dataset found in ./datasets/. Nothing to serve.
 
-Build one first (takes ~30 min; uses Geofabrik OSM + Planetiler):
+Build the default NE-US demo dataset (~30 min, one command):
 
-    docker compose run --rm workbench ./scripts/dataset build ne-us-z9-13-tiered \\
-        --region us-northeast \\
-        --bbox -80.6,38.9,-66.9,47.5 \\
-        --zoom-range 9-13
+    docker compose run --rm workbench ./scripts/dataset quickstart
 
 Then start the demo:
 
-    DATASET=ne-us-z9-13-tiered docker compose up
+    docker compose up
 
-To see other supported regions:
+Other commands:
 
-    docker compose run --rm workbench ./scripts/dataset regions
+    docker compose run --rm workbench ./scripts/dataset regions   # list Geofabrik regions
+    docker compose run --rm workbench ./scripts/dataset build --help   # custom dataset
 
 EOF
     exit 1
