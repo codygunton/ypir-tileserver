@@ -182,13 +182,16 @@ EOF
     IFS=',' read -r W S E N <<< "$bbox"
 
     echo "==> Extracting PIR tiles (z${min_zoom}-z${max_zoom}, ${tile_size}B slots)..."
+    # `--bbox=…` (with the =) rather than `--bbox …` because argparse
+    # would otherwise treat the leading `-` of the west-longitude value
+    # as a flag start when the value contains commas (e.g. -80.6,38.9,…).
     python3 "$ROOT/scripts/prepare_tiles.py" \
         --input "$mbtiles" \
         --output "$out" \
         --min-zoom "$min_zoom" \
         --max-zoom "$max_zoom" \
         --tile-size "$tile_size" \
-        --bbox "$W,$S,$E,$N"
+        --bbox="$W,$S,$E,$N"
 
     # 3. MBTiles → basemap/{z}/{x}/{y}.pbf
     echo "==> Extracting basemap (z0-z${basemap_max_zoom})..."
