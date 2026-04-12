@@ -2,12 +2,15 @@
 #
 # Entrypoint for the docker-compose workbench service.
 #
-# 1. Detect AVX-512 availability on the host and set RUSTFLAGS accordingly.
-# 2. Build the WASM client + Rust server (first run only; cached after).
-# 3. Pick a dataset: whatever $DATASET points at, else the first built
-#    dataset on disk, else fall back to synthetic so the demo renders.
-# 4. Start the YPIR server + Flask proxy. Kept in the foreground;
-#    Ctrl-C / docker compose down stops them both.
+# 1. Detect AVX-512 availability on the host and pick RUSTFLAGS.
+# 2. Build the WASM client, then the Rust server. (WASM first, with an
+#    unset RUSTFLAGS, because the x86-native flags we need for the
+#    server are nonsense for wasm32 and would emit hundreds of
+#    feature-not-recognized warnings.)
+# 3. Require a built dataset. Refuse to start otherwise — serving
+#    random-byte synthetic tiles produces a blank map, which has been
+#    confusing enough times to warrant a hard stop.
+# 4. Start the YPIR server + Flask proxy in the foreground.
 #
 set -euo pipefail
 
@@ -15,7 +18,7 @@ ROOT="/workspace"
 cd "$ROOT"
 
 # ────────────────────────────────────────────────────────────────────
-# 1. Pick RUSTFLAGS for the host CPU.
+# 1. Pick RUSTFLAGS for the server build.
 # ────────────────────────────────────────────────────────────────────
 has_avx512() { grep -q avx512f /proc/cpuinfo 2>/dev/null; }
 
@@ -25,28 +28,28 @@ if [[ "${FORCE_AVX512:-0}" == "1" ]]; then
         echo "    Binary would SIGILL; refusing to build." >&2
         exit 1
     fi
-    export RUSTFLAGS="-C target-cpu=native"
+    SERVER_RUSTFLAGS="-C target-cpu=native"
     BUILD_MODE="avx512 (forced)"
 elif [[ "${FORCE_PORTABLE:-0}" == "1" ]]; then
-    export RUSTFLAGS="-C target-cpu=native -C target-feature=-avx512f"
+    SERVER_RUSTFLAGS="-C target-cpu=native -C target-feature=-avx512f"
     BUILD_MODE="portable (forced)"
 elif has_avx512; then
-    export RUSTFLAGS="-C target-cpu=native"
+    SERVER_RUSTFLAGS="-C target-cpu=native"
     BUILD_MODE="avx512 (auto-detected)"
 else
-    export RUSTFLAGS="-C target-cpu=native -C target-feature=-avx512f"
+    SERVER_RUSTFLAGS="-C target-cpu=native -C target-feature=-avx512f"
     BUILD_MODE="portable (auto-detected, ~7× slower)"
 fi
 echo "==> Build mode: $BUILD_MODE"
-echo "==> RUSTFLAGS=$RUSTFLAGS"
 
 # ────────────────────────────────────────────────────────────────────
-# 2. Build WASM + server if missing or stale.
+# 2. Build WASM + server if missing. WASM gets a clean env (no
+#    x86-native RUSTFLAGS); the server gets SERVER_RUSTFLAGS.
 # ────────────────────────────────────────────────────────────────────
 WASM_PKG="$ROOT/wasm/pkg/ypir_wasm_bg.wasm"
 if [[ ! -f "$WASM_PKG" ]]; then
     echo "==> Building ypir-wasm..."
-    (cd "$ROOT/wasm" && wasm-pack build --target web --release)
+    (cd "$ROOT/wasm" && env -u RUSTFLAGS wasm-pack build --target web --release)
 fi
 
 FRONTEND_PKG="$ROOT/demo/frontend/pkg"
@@ -55,11 +58,11 @@ FRONTEND_PKG="$ROOT/demo/frontend/pkg"
 SERVER_BIN="$ROOT/server/target/release/ypir-cpu-server"
 if [[ ! -x "$SERVER_BIN" ]]; then
     echo "==> Building ypir-cpu-server (this takes a few minutes on first run)..."
-    (cd "$ROOT/server" && cargo build --release)
+    (cd "$ROOT/server" && RUSTFLAGS="$SERVER_RUSTFLAGS" cargo build --release)
 fi
 
 # ────────────────────────────────────────────────────────────────────
-# 3. Pick a dataset.
+# 3. Pick a dataset. Require one to exist.
 # ────────────────────────────────────────────────────────────────────
 DATASETS_DIR="$ROOT/datasets"
 TILES_DIR=""
@@ -67,8 +70,8 @@ TILES_DIR=""
 if [[ -n "${DATASET:-}" ]]; then
     TILES_DIR="$DATASETS_DIR/$DATASET"
     if [[ ! -f "$TILES_DIR/tiles.bin" ]]; then
-        echo "==> Requested DATASET=$DATASET but $TILES_DIR/tiles.bin not found." >&2
-        echo "    Available datasets:" >&2
+        echo "==> Requested DATASET=$DATASET but $TILES_DIR/tiles.bin does not exist." >&2
+        echo "    Built datasets:" >&2
         ls -1 "$DATASETS_DIR" 2>/dev/null | sed 's/^/      /' >&2 || echo "      (none)" >&2
         exit 1
     fi
@@ -83,15 +86,27 @@ else
 fi
 
 if [[ -z "$TILES_DIR" ]]; then
-    TILES_DIR="$DATASETS_DIR/synthetic"
-    if [[ ! -f "$TILES_DIR/tiles.bin" ]]; then
-        echo "==> No dataset found. Generating 1000 synthetic tiles for smoke test..."
-        mkdir -p "$TILES_DIR"
-        python3 "$ROOT/scripts/prepare_tiles.py" \
-            --synthetic --synthetic-count 1000 \
-            --output "$TILES_DIR"
-        echo "==> To build a real dataset: docker compose exec workbench ./scripts/dataset build ..."
-    fi
+    cat >&2 <<EOF
+
+==> No dataset found in ./datasets/. Nothing to serve.
+
+Build one first (takes ~30 min; uses Geofabrik OSM + Planetiler):
+
+    docker compose run --rm workbench ./scripts/dataset build ne-us-z9-13-tiered \\
+        --region us-northeast \\
+        --bbox -80.6,38.9,-66.9,47.5 \\
+        --zoom-range 9-13
+
+Then start the demo:
+
+    DATASET=ne-us-z9-13-tiered docker compose up
+
+To see other supported regions:
+
+    docker compose run --rm workbench ./scripts/dataset regions
+
+EOF
+    exit 1
 fi
 
 NUM_TILES=$(python3 -c "import json; m=json.load(open('$TILES_DIR/tile_mapping.json')); print(m.get('num_pir_slots', m['num_tiles']))")
@@ -125,8 +140,6 @@ echo "==> Starting YPIR server on :$YPIR_PORT..."
     --port "$YPIR_PORT" &
 PIDS+=($!)
 
-# Wait for YPIR server offline precomputation to finish before starting
-# the proxy — the proxy queries /api/params during startup.
 echo -n "==> Waiting for YPIR server (may take a minute on portable builds)..."
 for _ in $(seq 1 600); do
     if (echo > /dev/tcp/localhost/$YPIR_PORT) 2>/dev/null; then
@@ -159,7 +172,7 @@ cat <<EOF
   then restart the compose service.
 
   Build more datasets:
-    docker compose exec workbench ./scripts/dataset build --help
+    docker compose run --rm workbench ./scripts/dataset build --help
 
   Ctrl-C to stop.
 ========================================

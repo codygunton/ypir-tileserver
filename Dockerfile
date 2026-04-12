@@ -49,4 +49,7 @@ RUN rustup install nightly-2024-02-07 \
 WORKDIR /workspace
 EXPOSE 8009 8084
 
-ENTRYPOINT ["./scripts/dev-up.sh"]
+# CMD (not ENTRYPOINT) so `docker compose run workbench <other-cmd>`
+# cleanly overrides this — e.g., to run the dataset CLI without
+# starting the demo.
+CMD ["./scripts/dev-up.sh"]

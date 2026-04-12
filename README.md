@@ -26,31 +26,21 @@ cd ypir-tileserver
 # Build the workbench image (~5 min, one time).
 docker compose build
 
-# Start the demo. First run builds wasm + server (~3 min) and starts
-# with synthetic tiles so you see the UI. Subsequent runs are instant.
+# Build a dataset (required, ~30 min; uses Geofabrik OSM + Planetiler).
+# This produces datasets/ne-us-z9-13-tiered/{tiles.bin, basemap/, ...}:
+docker compose run --rm workbench ./scripts/dataset build ne-us-z9-13-tiered \
+    --region us-northeast \
+    --bbox -80.6,38.9,-66.9,47.5 \
+    --zoom-range 9-13
+
+# Start the demo. First run builds wasm + server (~3 min); subsequent
+# runs are instant.
 docker compose up
 ```
 
 Open <http://localhost:8009>.
 
-Your CPU is auto-detected: AVX-512 hosts get the fast path, everything
-else gets a portable fallback (≈7× slower but correct). Override with
-`FORCE_PORTABLE=1` or `FORCE_AVX512=1` in the environment.
-
-## Build a real dataset
-
-The synthetic demo is a smoke test. For a real map, use the `dataset`
-CLI inside the workbench container:
-
-```bash
-# In a second terminal, with `docker compose up` running:
-docker compose exec workbench ./scripts/dataset build ne-us-z9-13-tiered \
-    --region us-northeast \
-    --bbox -80.6,38.9,-66.9,47.5 \
-    --zoom-range 9-13
-```
-
-This runs, end-to-end:
+The `dataset build` step, end-to-end:
 
 1. Download the `us-northeast` OSM extract from Geofabrik (~400 MB)
 2. Build an OpenMapTiles-schema MBTiles via Planetiler (~2 GB, ~15 min)
@@ -59,7 +49,14 @@ This runs, end-to-end:
 
 Total: ~30 min, ~5 GB peak disk in `./data/`.
 
-Then run with that dataset:
+Your CPU is auto-detected: AVX-512 hosts get the fast path, everything
+else gets a portable fallback (≈7× slower but correct). Override with
+`FORCE_PORTABLE=1` or `FORCE_AVX512=1` in the environment.
+
+### Picking a specific dataset
+
+With only one built dataset, `docker compose up` uses it automatically.
+With more than one, set `DATASET`:
 
 ```bash
 DATASET=ne-us-z9-13-tiered docker compose up
@@ -67,22 +64,25 @@ DATASET=ne-us-z9-13-tiered docker compose up
 
 ### Trying different regions
 
+Use `docker compose run --rm` for one-shot dataset commands — no running
+service needed:
+
 ```bash
 # List supported Geofabrik regions
-docker compose exec workbench ./scripts/dataset regions
+docker compose run --rm workbench ./scripts/dataset regions
 
 # Manhattan only, very high resolution
-docker compose exec workbench ./scripts/dataset build nyc-z14 \
+docker compose run --rm workbench ./scripts/dataset build nyc-z14 \
     --region us-new-york --bbox -74.05,40.68,-73.89,40.85 \
     --zoom-range 14-14 --tile-size 20480
 
 # Germany, medium zoom
-docker compose exec workbench ./scripts/dataset build germany-z8-12 \
+docker compose run --rm workbench ./scripts/dataset build germany-z8-12 \
     --region europe-germany --bbox 5.9,47.3,15.0,55.0 \
     --zoom-range 8-12
 
 # List what's built
-docker compose exec workbench ./scripts/dataset list
+docker compose run --rm workbench ./scripts/dataset list
 ```
 
 Beyond any region's own basemap coverage, the Flask proxy falls back to
