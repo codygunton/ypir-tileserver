@@ -6,8 +6,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ypir = { git = "https://github.com/codygunton/ypir", rev = "0c073d79b30a5f61648e51152e8c53188aca2f17" }
-spiral-rs = { git = "https://github.com/menonsamir/spiral-rs.git", rev = "6929441" }
+ypir = { git = "https://github.com/codygunton/ypir", rev = "4b8a22ffaa9c4273153c08dd2759370f1c1ea4aa" }
+spiral-rs = { git = "https://github.com/codygunton/spiral-rs.git", rev = "707c1be6b1455d88420818959ccdedc1f4ddb6d0" }
 actix-web = "4"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
