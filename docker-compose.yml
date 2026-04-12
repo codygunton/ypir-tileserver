@@ -26,10 +26,10 @@ services:
       - "8084:8084"   # YPIR Rust server (direct access, rarely needed)
     environment:
       - RUST_LOG=${RUST_LOG:-info}
-      # Set FORCE_PORTABLE=1 or FORCE_AVX512=1 to override auto-detect.
-      - FORCE_PORTABLE=${FORCE_PORTABLE:-}
-      - FORCE_AVX512=${FORCE_AVX512:-}
-      # DATASET selects a directory under ./datasets/. Empty = synthetic.
+      # Set AVX512=1 to opt into the fast path on hosts that support it
+      # (Intel Xeon Skylake-SP+ / AMD EPYC Genoa+). Default is portable.
+      - AVX512=${AVX512:-}
+      # DATASET selects a directory under ./datasets/.
       - DATASET=${DATASET:-}
 
 volumes:

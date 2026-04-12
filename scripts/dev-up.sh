@@ -19,26 +19,25 @@ cd "$ROOT"
 
 # ────────────────────────────────────────────────────────────────────
 # 1. Pick RUSTFLAGS for the server build.
+#
+# Default is the portable path — works on any x86_64 or ARM host,
+# including Apple Silicon under Rosetta 2. ~7× slower at offline
+# precompute, ~1.3× slower per query; fine for demo use.
+#
+# Set AVX512=1 to build the fast path. Refuses if the host doesn't
+# expose AVX-512 (would SIGILL at runtime).
 # ────────────────────────────────────────────────────────────────────
-has_avx512() { grep -q avx512f /proc/cpuinfo 2>/dev/null; }
-
-if [[ "${FORCE_AVX512:-0}" == "1" ]]; then
-    if ! has_avx512; then
-        echo "==> FORCE_AVX512=1 set but host CPU has no AVX-512." >&2
+if [[ "${AVX512:-0}" == "1" ]]; then
+    if ! grep -q avx512f /proc/cpuinfo 2>/dev/null; then
+        echo "==> AVX512=1 set but host CPU has no AVX-512." >&2
         echo "    Binary would SIGILL; refusing to build." >&2
         exit 1
     fi
     SERVER_RUSTFLAGS="-C target-cpu=native"
-    BUILD_MODE="avx512 (forced)"
-elif [[ "${FORCE_PORTABLE:-0}" == "1" ]]; then
-    SERVER_RUSTFLAGS="-C target-cpu=native -C target-feature=-avx512f"
-    BUILD_MODE="portable (forced)"
-elif has_avx512; then
-    SERVER_RUSTFLAGS="-C target-cpu=native"
-    BUILD_MODE="avx512 (auto-detected)"
+    BUILD_MODE="avx512 (opted in)"
 else
     SERVER_RUSTFLAGS="-C target-cpu=native -C target-feature=-avx512f"
-    BUILD_MODE="portable (auto-detected, ~7× slower)"
+    BUILD_MODE="portable (default — set AVX512=1 for the fast path)"
 fi
 echo "==> Build mode: $BUILD_MODE"
 

@@ -46,9 +46,13 @@ The `dataset build` step, end-to-end:
 
 Total: ~30 min, ~5 GB peak disk in `./data/`.
 
-Your CPU is auto-detected: AVX-512 hosts get the fast path, everything
-else gets a portable fallback (≈7× slower but correct). Override with
-`FORCE_PORTABLE=1` or `FORCE_AVX512=1` in the environment.
+The default build is portable — works on any x86_64 or ARM host,
+including Apple Silicon under Rosetta 2. ≈7× slower at offline
+precompute and ≈1.3× slower per query than the AVX-512 path, but
+fine for demo use. To opt into the fast path on an AVX-512 host
+(Intel Xeon Skylake-SP+, AMD EPYC Genoa+):
+
+    AVX512=1 docker compose up
 
 ### Picking a specific dataset
 
