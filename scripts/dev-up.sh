@@ -45,20 +45,19 @@ echo "==> Build mode: $BUILD_MODE"
 # 2. Build WASM + server if missing. WASM gets a clean env (no
 #    x86-native RUSTFLAGS); the server gets SERVER_RUSTFLAGS.
 # ────────────────────────────────────────────────────────────────────
-WASM_PKG="$ROOT/wasm/pkg/ypir_wasm_bg.wasm"
-if [[ ! -f "$WASM_PKG" ]]; then
-    echo "==> Building ypir-wasm..."
-    (cd "$ROOT/wasm" && env -u RUSTFLAGS wasm-pack build --target web --release)
-fi
+# Always invoke the build tools; they detect RUSTFLAGS / source changes
+# and no-op in ~a second when there's nothing to do. Short-circuiting
+# on "binary already exists" previously left stale AVX-512 binaries in
+# place after switching to the portable build and vice versa.
+echo "==> Building ypir-wasm..."
+(cd "$ROOT/wasm" && env -u RUSTFLAGS wasm-pack build --target web --release)
 
 FRONTEND_PKG="$ROOT/demo/frontend/pkg"
 [[ -e "$FRONTEND_PKG" ]] || ln -sfn "$ROOT/wasm/pkg" "$FRONTEND_PKG"
 
+echo "==> Building ypir-cpu-server..."
+(cd "$ROOT/server" && RUSTFLAGS="$SERVER_RUSTFLAGS" cargo build --release)
 SERVER_BIN="$ROOT/server/target/release/ypir-cpu-server"
-if [[ ! -x "$SERVER_BIN" ]]; then
-    echo "==> Building ypir-cpu-server (this takes a few minutes on first run)..."
-    (cd "$ROOT/server" && RUSTFLAGS="$SERVER_RUSTFLAGS" cargo build --release)
-fi
 
 # ────────────────────────────────────────────────────────────────────
 # 3. Pick a dataset. Require one to exist.
