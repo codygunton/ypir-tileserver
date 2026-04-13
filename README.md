@@ -46,11 +46,16 @@ The `dataset build` step, end-to-end:
 
 Total: ~30 min, ~5 GB peak disk in `./data/`.
 
-The default build is portable — works on any x86_64 or ARM host,
-including Apple Silicon under Rosetta 2. ≈7× slower at offline
-precompute and ≈1.3× slower per query than the AVX-512 path, but
-fine for demo use. To opt into the fast path on an AVX-512 host
-(Intel Xeon Skylake-SP+, AMD EPYC Genoa+):
+The default build is portable: scalar Rust that the compiler
+auto-vectorizes to AVX-2 on x86_64 and NEON on aarch64. Works on
+any supported host, including native Apple Silicon (no Rosetta
+needed). ≈7× slower at one-time offline precompute, ≈1.3× slower
+per query than the AVX-512 path — the slowdown is almost entirely
+at startup; once the server is serving queries, the difference is
+below human perception.
+
+To opt into the fast path on an AVX-512 host (Intel Xeon
+Skylake-SP+, AMD EPYC Genoa+):
 
     AVX512=1 docker compose up
 
@@ -94,23 +99,20 @@ zooming out shows the rest of the world.
 
 The repo is bind-mounted into the container — edit on the host, rebuild
 inside. Cargo and wasm build caches live in named Docker volumes, so
-rebuilds are incremental:
+rebuilds are incremental.
+
+For any change to `server/`, `wasm/`, `demo/proxy/`, or `shared/proxy/`:
 
 ```bash
-# After editing server/src/main.rs (or anywhere in server/):
-docker compose exec workbench sh -c 'cd server && cargo build --release'
-docker compose restart workbench
-
-# After editing wasm/src/:
-docker compose exec workbench sh -c 'cd wasm && wasm-pack build --target web --release'
-docker compose restart workbench
-
-# After editing demo/frontend/ or shared/frontend/:
-# Just refresh the browser — no build step.
-
-# After editing demo/proxy/server.py:
 docker compose restart workbench
 ```
+
+That re-runs the entrypoint, which invokes `cargo build --release` and
+`wasm-pack build` (both are cheap no-ops when nothing changed, ~5–10s)
+before starting the server and proxy again.
+
+For any change to `demo/frontend/` or `shared/frontend/` — just refresh
+the browser. No build step, no restart.
 
 ## Repository layout
 
@@ -123,8 +125,8 @@ demo/
   frontend/         MapLibre-based web UI
 shared/             JS modules and Python helpers
 scripts/
-  dataset            Top-level dataset CLI (fetch-osm, build, list)
-  dev-up.sh          Docker entrypoint
+  dataset            Top-level dataset CLI (quickstart, fetch-osm, build, list, ...)
+  dev-up.sh          Docker entrypoint — build tools + start server+proxy
   prepare_tiles.py   MBTiles → tiles.bin + tile_mapping.json
   03-extract-basemap.py  MBTiles → basemap/{z}/{x}/{y}.pbf
 data/               OSM PBFs, MBTiles, Planetiler cache (gitignored)
@@ -133,35 +135,34 @@ datasets/           Built PIR datasets (gitignored)
 
 ## Running without Docker
 
-The host-side scripts still work if you prefer to install Rust + Python
-+ Java locally:
+If you'd rather install the toolchain on your host:
 
 ```bash
-# One-time
-rustup toolchain install nightly-2024-02-07
-rustup target add wasm32-unknown-unknown --toolchain nightly-2024-02-07
+# One-time setup
+rustup toolchain install nightly
+rustup target add wasm32-unknown-unknown
 cargo install wasm-pack
 pip install flask requests psutil
-# Plus install JRE 21+ for Planetiler.
+# Plus install JRE 21+ for Planetiler (e.g. apt install temurin-21-jre).
 
-# Build dataset
-scripts/dataset build ne-us-z9-13-tiered \
-    --region us-northeast --bbox -80.6,38.9,-66.9,47.5 --zoom-range 9-13
+# Build the default NE-US dataset
+./scripts/dataset quickstart
 
-# Run
+# Run (auto-detects AVX-512 from the host, unlike the Docker path
+# which defaults to portable; set RUSTFLAGS to override).
 ./run_demo.sh --dataset ne-us-z9-13-tiered
 ```
 
 ## How it works
 
-- **Server** memory-maps `tiles.bin` and precomputes SimplePIR offline
-  values at startup.
+- **Server** reads `tiles.bin` into memory at startup and precomputes
+  SimplePIR offline values from it. Memory resident, ready to serve.
 - **Client** (WASM) generates a YPIR query locally. The server never
   sees which tile is being requested — only encrypted query bytes.
 - **Server** homomorphically evaluates a packed dot product and returns
   an encrypted response. The client decrypts locally to recover the
   requested PBF tile bytes.
-- **Basemap tiles** are served in the clear: low-zoom data isn't
+- **Basemap tiles** (low zoom) are served in the clear: that data isn't
   location-sensitive, and avoiding PIR there saves orders of magnitude
   of bandwidth and latency.
 
@@ -169,15 +170,22 @@ Protocol details in the YPIR paper: <https://eprint.iacr.org/2024/008>
 
 ## Performance
 
-Measured on an AVX-512 desktop (synthetic demo params, 20 KB slot size):
+Measured on an AVX-512 Intel desktop, 20 KB PIR slot size:
 
 | DB size | AVX-512 offline precompute | Portable offline precompute |
 |---:|---:|---:|
-|  4096 slots |  3.9 s | 26.6 s (6.9× slower) |
-| 16384 slots |  5.4 s | 39.2 s (7.3× slower) |
+|  4,096 slots |  3.9 s | 26.6 s (6.9× slower) |
+| 16,384 slots |  5.4 s | 39.2 s (7.3× slower) |
+|100,000 slots (NE-US) | ≈20 s | ≈140 s |
 
-Per-query latency is only ~1.3× slower on portable — the penalty
-dominates during the one-time offline setup, not at query time.
+Offline precompute runs once at server startup. Per-query latency is
+only ~1.3× slower on portable (≈8 ms overhead on a packed response).
+
+The "portable" path is scalar Rust that the compiler auto-vectorizes:
+AVX-2 on x86_64, NEON on aarch64. Binaries don't share instruction
+sets across architectures — building on Apple Silicon produces NEON
+code automatically; building on x86 produces AVX-2 (or AVX-512 if you
+set `AVX512=1`).
 
 ## Credits
 
@@ -186,10 +194,14 @@ dominates during the one-time offline setup, not at query time.
   [fork](https://github.com/codygunton/ypir) carrying (a) a Rayon
   parallelization of the first-dimension multiply and (b) portable
   non-AVX-512 fallbacks for the hot kernels.
-- Spiral-rs primitives: server uses
-  [menonsamir/spiral-rs](https://github.com/menonsamir/spiral-rs); the
-  WASM client vendors [Blyss](https://github.com/blyssprivacy/sdk)'s
-  fork at `spiral-rs/` with a one-line visibility patch.
+- Spiral-rs primitives (the underlying LWE/NTT library):
+  - Server pins a [fork](https://github.com/codygunton/spiral-rs) of
+    [menonsamir/spiral-rs](https://github.com/menonsamir/spiral-rs)
+    with cfg-gated x86 imports and scalar fallbacks for the `avx2`-only
+    routines so aarch64 builds work.
+  - WASM client vendors [Blyss](https://github.com/blyssprivacy/sdk)'s
+    separate fork at `spiral-rs/` with a one-line visibility patch
+    (needed to assemble YPIR expansion public keys).
 - Tile rendering: [MapLibre GL JS](https://maplibre.org/).
 - Tile generation: [Planetiler](https://github.com/onthegomap/planetiler)
   against the [OpenMapTiles schema](https://openmaptiles.org/).
