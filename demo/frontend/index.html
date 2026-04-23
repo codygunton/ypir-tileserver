@@ -62,6 +62,16 @@
         </div>
     </div>
 
+    <!-- Measurement panel (bottom-left): per-query events, export for experiments -->
+    <div id="measurement-panel" class="overlay-panel" style="display:none;">
+        <div class="metrics-header">Measurement</div>
+        <div id="measurement-body"></div>
+        <div class="measurement-actions">
+            <button id="measurement-download" type="button">Download CSV</button>
+            <button id="measurement-clear" type="button">Clear</button>
+        </div>
+    </div>
+
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
     <script type="module" src="app.js"></script>

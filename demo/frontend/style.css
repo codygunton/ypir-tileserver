@@ -165,3 +165,34 @@ body {
     font-size: 12px;
     font-weight: 500;
 }
+
+/* Measurement panel — bottom-left */
+#measurement-panel {
+    bottom: 32px;
+    left: 12px;
+    min-width: 220px;
+}
+
+.measurement-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(79, 195, 247, 0.15);
+}
+
+.measurement-actions button {
+    flex: 1;
+    background: rgba(79, 195, 247, 0.1);
+    border: 1px solid rgba(79, 195, 247, 0.3);
+    color: #4fc3f7;
+    font-size: 11px;
+    padding: 5px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.measurement-actions button:hover {
+    background: rgba(79, 195, 247, 0.2);
+}

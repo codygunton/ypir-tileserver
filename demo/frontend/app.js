@@ -3,6 +3,7 @@ import { LRUTileCache } from '/shared/tile-cache.js';
 import { TileBatchDispatcher } from '/shared/tile-batch.js';
 import { decodeSlotToPBF, decodeMultiSlotToPBF } from '/shared/tile-decoder.js';
 import { initMap } from '/shared/map-setup.js';
+import * as measurement from './src/measurement.js';
 
 // --- State ---
 let client = null;
@@ -122,6 +123,10 @@ async function initialize() {
         if (!paramsResp.ok) throw new Error('Failed to fetch /api/params');
         pirParams = await paramsResp.json();
         console.log('PIR params:', pirParams);
+        measurement.setWireSizes({
+            query_bytes: pirParams.query_bytes,
+            response_bytes: pirParams.response_bytes,
+        });
 
         setStatus('Initializing YPIR PIR client...');
         setProgress(15);
@@ -172,6 +177,8 @@ async function initialize() {
             document.getElementById('loading-screen').style.display = 'none';
             document.getElementById('pir-badge').style.display = 'flex';
             document.getElementById('cpu-metrics').style.display = 'block';
+            document.getElementById('measurement-panel').style.display = 'block';
+            updateMeasurementPanel();
         }, 300);
 
         startMetricsPolling();
@@ -191,7 +198,10 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
     const key = `${z}/${x}/${y}`;
 
     const cached = tileCache.get(key);
-    if (cached) return cached;
+    if (cached) {
+        measurement.recordQuery({ kind: 'cache-hit', key, z });
+        return cached;
+    }
 
     // Short debounce: skip tiles cancelled during zoom animation.
     await new Promise(r => {
@@ -237,10 +247,26 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
         totalLatencyMs += elapsed;
         lastQueryMs = elapsed;
         updatePirStats();
+        measurement.recordQuery({
+            kind: 'pir',
+            key,
+            z,
+            slots: slots.length,
+            latency_ms: Math.round(elapsed),
+        });
         console.log(`PIR ${key}: OK ${slots.length} slot(s) in ${elapsed.toFixed(0)}ms`);
         return pbf;
     } catch (e) {
-        if (e?.name !== 'AbortError') console.error(`PIR ${key}: fetch failed:`, e?.message || e);
+        if (e?.name !== 'AbortError') {
+            console.error(`PIR ${key}: fetch failed:`, e?.message || e);
+            measurement.recordQuery({
+                kind: 'pir',
+                key,
+                z,
+                slots: slots.length,
+                error: e?.name || 'error',
+            });
+        }
         return new ArrayBuffer(0);
     }
 }
@@ -251,6 +277,27 @@ function updatePirStats() {
         `z${currentZoom.toFixed(1)} | ${queryCount} queries | avg ${avg}ms`;
     document.getElementById('query-time').textContent =
         `${lastQueryMs.toFixed(0)}ms`;
+    updateMeasurementPanel();
+}
+
+function fmtBytes(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function updateMeasurementPanel() {
+    const s = measurement.stats();
+    const el = document.getElementById('measurement-body');
+    if (!el) return;
+    el.innerHTML = `
+        <div class="metrics-row"><span class="metrics-label">PIR queries</span><span class="metrics-value">${s.pir}</span></div>
+        <div class="metrics-row"><span class="metrics-label">Cache hits</span><span class="metrics-value">${s.cacheHits} (${(s.hitRate * 100).toFixed(0)}%)</span></div>
+        <div class="metrics-row"><span class="metrics-label">p50 / p95</span><span class="metrics-value">${s.p50Ms.toFixed(0)} / ${s.p95Ms.toFixed(0)} ms</span></div>
+        <div class="metrics-row"><span class="metrics-label">Bytes up</span><span class="metrics-value">${fmtBytes(s.bytesUp)}</span></div>
+        <div class="metrics-row"><span class="metrics-label">Bytes down</span><span class="metrics-value">${fmtBytes(s.bytesDown)}</span></div>
+    `;
 }
 
 // --- CPU metrics polling ---
@@ -271,6 +318,17 @@ function startMetricsPolling() {
     poll();
     setInterval(poll, 2000);
 }
+
+// --- Measurement panel controls ---
+document.addEventListener('DOMContentLoaded', () => {
+    const dl = document.getElementById('measurement-download');
+    if (dl) dl.addEventListener('click', () => measurement.downloadCsv());
+    const clr = document.getElementById('measurement-clear');
+    if (clr) clr.addEventListener('click', () => {
+        measurement.clearEvents();
+        updateMeasurementPanel();
+    });
+});
 
 // --- Start ---
 initialize();
