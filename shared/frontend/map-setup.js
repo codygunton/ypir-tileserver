@@ -60,6 +60,10 @@ export function initMap(mappingData, fetchTileFn, opts = {}) {
         container: 'map',
         center: center,
         zoom: initialZoom,
+        // Sync map state with URL hash (#z/lat/lng) so deep links work
+        // and the location is visible/copyable. Constructor center/zoom
+        // are used only if no hash is present.
+        hash: true,
         minZoom: 0,
         maxZoom: 16,
         style: {
