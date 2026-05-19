@@ -53,6 +53,7 @@ Start from `template-markov.json` for new workloads.
 | `pan_speed_jitter` | float | Per-tick multiplicative jitter on speed. 0.0 = constant speed; 0.3 = ±30%. |
 | `zoom_change_prob_per_s` | float | Per-second probability of a discrete zoom change event. |
 | `zoom_range` | `[zmin, zmax]` | Inclusive integer zoom range. Discrete steps of ±1. |
+| `zoom_momentum` | float, optional | P(same direction as last change \| a change fires). 0.0 = independent coin flips (default, current behavior). 0.8 = realistic clusters of 2-4 consecutive zoom-ins/zoom-outs. Bounded behavior: at `zmax` direction is forced down, at `zmin` forced up. |
 
 ### Replay semantics
 

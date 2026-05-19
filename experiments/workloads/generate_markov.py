@@ -21,7 +21,8 @@ Required fields in the config:
 
 Where params has:
     pan_speed_deg_per_s_at_z12, pan_turn_std, pan_speed_jitter,
-    zoom_change_prob_per_s, zoom_range [zmin, zmax]
+    zoom_change_prob_per_s, zoom_range [zmin, zmax],
+    zoom_momentum (optional, default 0.0)
 """
 
 import argparse
@@ -77,6 +78,11 @@ def generate_frames(cfg: dict) -> list[dict]:
     zmin, zmax = p["zoom_range"]
     tick_s = cfg["tick_ms"] / 1000.0
     zoom_change_prob_per_tick = p["zoom_change_prob_per_s"] * tick_s
+    # Momentum: P(same direction as last zoom change | a change fires).
+    # 0.0 = independent coin flips (jittery). ~0.8 = clusters of consecutive
+    # zoom-ins or zoom-outs. Default is 0.0 for backwards compatibility.
+    zoom_momentum = p.get("zoom_momentum", 0.0)
+    last_zoom_direction: int | None = None
 
     frames = []
     num_frames = cfg["duration_ms"] // cfg["tick_ms"]
@@ -111,12 +117,21 @@ def generate_frames(cfg: dict) -> list[dict]:
         if lat == n and math.sin(heading) > 0:
             heading = -heading
 
-        # Discrete ±1 zoom events.
+        # Discrete ±1 zoom events with momentum.
         if rng.random() < zoom_change_prob_per_tick:
-            direction = rng.choice([-1, 1])
+            if last_zoom_direction is None:
+                direction = rng.choice([-1, 1])
+            elif rng.random() < zoom_momentum:
+                direction = last_zoom_direction
+            else:
+                direction = -last_zoom_direction
+            # At a boundary, flip direction (zmax can only zoom out, etc.).
+            if not (zmin <= zoom + direction <= zmax):
+                direction = -direction
             new_zoom = zoom + direction
             if zmin <= new_zoom <= zmax:
                 zoom = new_zoom
+                last_zoom_direction = direction
 
     return frames
 
