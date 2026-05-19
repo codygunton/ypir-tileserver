@@ -54,6 +54,8 @@ Start from `template-markov.json` for new workloads.
 | `zoom_change_prob_per_s` | float | Per-second probability of a discrete zoom change event. |
 | `zoom_range` | `[zmin, zmax]` | Inclusive integer zoom range. Discrete steps of ±1. |
 | `zoom_momentum` | float, optional | P(same direction as last change \| a change fires). 0.0 = independent coin flips (default, current behavior). 0.8 = realistic clusters of 2-4 consecutive zoom-ins/zoom-outs. Bounded behavior: at `zmax` direction is forced down, at `zmin` forced up. |
+| `pan_pause_prob_per_s` | float, optional | Per-second probability of entering a pause from the moving state. 0.0 = never pause (default). ~0.15 ≈ a pause every ~6s of motion. |
+| `pan_pause_duration_s` | float, optional | Mean pause length in seconds, exponentially distributed. Default 1.5. While paused, position stays fixed; zoom can still change. |
 
 ### Replay semantics
 

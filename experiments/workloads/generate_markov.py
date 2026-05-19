@@ -84,6 +84,14 @@ def generate_frames(cfg: dict) -> list[dict]:
     zoom_momentum = p.get("zoom_momentum", 0.0)
     last_zoom_direction: int | None = None
 
+    # Pause-state model: stop panning periodically to mimic a user looking
+    # at the map. While paused, position stays fixed; zoom can still change
+    # (users zoom while stationary).
+    pause_prob_per_s = p.get("pan_pause_prob_per_s", 0.0)
+    pause_prob_per_tick = pause_prob_per_s * tick_s
+    pause_duration_s = p.get("pan_pause_duration_s", 1.5)
+    pause_remaining_s = 0.0
+
     frames = []
     num_frames = cfg["duration_ms"] // cfg["tick_ms"]
 
@@ -95,27 +103,39 @@ def generate_frames(cfg: dict) -> list[dict]:
             "zoom": round(zoom, 3),
         })
 
-        # Pan: heading drift + Mercator-corrected step. Speed scales with
-        # 2^(12-zoom) so on-screen pan rate stays roughly constant across zooms.
-        heading += rng.gauss(0, p["pan_turn_std"])
-        speed_scale = 2.0 ** (12 - zoom)
-        speed = p["pan_speed_deg_per_s_at_z12"] * speed_scale
-        speed *= 1.0 + rng.uniform(-p["pan_speed_jitter"], p["pan_speed_jitter"])
+        # Pause / move state: pan only when not paused. Zoom logic below
+        # runs regardless.
+        if pause_remaining_s > 0:
+            pause_remaining_s -= tick_s
+            panning_this_tick = False
+        elif pause_prob_per_tick > 0 and rng.random() < pause_prob_per_tick:
+            pause_remaining_s = rng.expovariate(1.0 / pause_duration_s)
+            panning_this_tick = False
+        else:
+            panning_this_tick = True
 
-        dlng = speed * math.cos(heading) * tick_s / max(math.cos(math.radians(lat)), 0.1)
-        dlat = speed * math.sin(heading) * tick_s
-        lng = clamp(lng + dlng, w, e)
-        lat = clamp(lat + dlat, s, n)
+        if panning_this_tick:
+            # Pan: heading drift + Mercator-corrected step. Speed scales with
+            # 2^(12-zoom) so on-screen pan rate stays roughly constant across zooms.
+            heading += rng.gauss(0, p["pan_turn_std"])
+            speed_scale = 2.0 ** (12 - zoom)
+            speed = p["pan_speed_deg_per_s_at_z12"] * speed_scale
+            speed *= 1.0 + rng.uniform(-p["pan_speed_jitter"], p["pan_speed_jitter"])
 
-        # Slide along walls rather than getting stuck in a corner.
-        if lng == w and math.cos(heading) < 0:
-            heading = math.pi - heading
-        if lng == e and math.cos(heading) > 0:
-            heading = math.pi - heading
-        if lat == s and math.sin(heading) < 0:
-            heading = -heading
-        if lat == n and math.sin(heading) > 0:
-            heading = -heading
+            dlng = speed * math.cos(heading) * tick_s / max(math.cos(math.radians(lat)), 0.1)
+            dlat = speed * math.sin(heading) * tick_s
+            lng = clamp(lng + dlng, w, e)
+            lat = clamp(lat + dlat, s, n)
+
+            # Slide along walls rather than getting stuck in a corner.
+            if lng == w and math.cos(heading) < 0:
+                heading = math.pi - heading
+            if lng == e and math.cos(heading) > 0:
+                heading = math.pi - heading
+            if lat == s and math.sin(heading) < 0:
+                heading = -heading
+            if lat == n and math.sin(heading) > 0:
+                heading = -heading
 
         # Discrete ±1 zoom events with momentum.
         if rng.random() < zoom_change_prob_per_tick:
