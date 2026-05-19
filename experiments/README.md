@@ -89,6 +89,18 @@ Each run drops a directory under `runs/` with `events.csv`,
 `trajectory.json`, `meta.json` (git SHA, hostname, stats), and
 `console.log` (browser stdout).
 
+## Running every workload at once
+
+```bash
+# 5 terrain workloads × N seeds × {pir, http}
+python harness/run_all.py --seeds 10        # 100 runs
+python harness/run_all.py --seeds 30        # 300 runs (paper-grade)
+python harness/run_all.py --seeds 10 --modes pir   # PIR only, 50 runs
+```
+
+Continues past failures in one workload to the next; `--bail` to stop on
+the first error. Exits non-zero if any run failed.
+
 ## Batch-running one config across seeds and modes
 
 ```bash
