@@ -89,10 +89,22 @@ Each run drops a directory under `runs/` with `events.csv`,
 `trajectory.json`, `meta.json` (git SHA, hostname, stats), and
 `console.log` (browser stdout).
 
-## Sweeping all cells
+## Batch-running one config across seeds and modes
 
-Not implemented yet. Will be `harness/sweep.py --matrix configs/matrix.toml`
-once the bundling variants and per-cell configs land.
+```bash
+# 10 seeds × {pir, http} = 20 runs, all from the same bounds/params
+python harness/sweep.py --workload workloads/my-config.json --seeds 10
+
+# Just PIR, 30 seeds
+python harness/sweep.py --workload workloads/my-config.json --seeds 30 --modes pir
+
+# Continue an earlier sweep with seeds [50..60)
+python harness/sweep.py --workload workloads/my-config.json --seeds 10 --start-seed 50
+```
+
+Each `(seed, mode)` lands in its own `runs/` directory. Failures are
+logged at the end; default behavior continues past errors (pass
+`--bail` to stop on the first one).
 
 ## Notes
 
