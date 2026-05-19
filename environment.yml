@@ -1,0 +1,34 @@
+# Conda environment for ypir-tileserver development.
+#
+# Covers: Flask proxy deps, the Playwright replay harness, and the
+# pandas/matplotlib stack for experiments/analysis/ notebooks.
+#
+# Setup:
+#     conda env create -f environment.yml
+#     conda activate ypir
+#     playwright install chromium       # downloads browser binaries
+#
+# Recreate after pulling environment.yml changes:
+#     conda env update -f environment.yml --prune
+
+name: ypir
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+
+  # Flask proxy (demo/proxy/server.py)
+  - flask
+  - requests
+  - psutil
+
+  # Playwright replay harness (experiments/harness/run.py)
+  - playwright>=1.40
+
+  # Analysis notebooks (experiments/analysis/)
+  - pandas
+  - matplotlib
+  - jupyterlab
+
+  # Pip available inside the env in case something is only on PyPI
+  - pip

@@ -44,10 +44,19 @@ runs/<config-name>-<git-sha>-<timestamp>/
 
 ## Running a single cell
 
-Prereqs (one-time):
+Prereqs (one-time). Pick one of:
 
 ```bash
+# Conda (recommended if you already use it for GIS work)
+conda env create -f ../environment.yml
+conda activate ypir
+playwright install chromium
+
+# Or: pip + venv
+python3.12 -m venv ../.venv
+source ../.venv/bin/activate
 pip install -r harness/requirements.txt
+pip install flask requests psutil
 playwright install chromium
 ```
 

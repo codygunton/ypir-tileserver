@@ -2,6 +2,8 @@ target/
 __pycache__/
 *.pyc
 node_modules/
+.venv/
+.conda/
 
 # Generated artifacts
 wasm/pkg/
