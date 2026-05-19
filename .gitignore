@@ -11,6 +11,12 @@ demo/frontend/pkg
 data/
 datasets/
 
+# Paper drafts and notes — out of repo for now
+paper/
+
+# Experiment outputs (CSVs, run dirs); harness/configs/workloads/analysis are tracked
+experiments/runs/
+
 .DS_Store
 .vscode/
 .idea/
