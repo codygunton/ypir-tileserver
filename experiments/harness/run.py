@@ -143,6 +143,7 @@ async def run_replay(args: argparse.Namespace) -> None:
     meta = {
         "run_name": run_name,
         "workload": workload["name"],
+        "seed": workload.get("seed"),
         "mode": args.mode,
         "vite_url": args.vite_url,
         "git_sha": sha,
