@@ -1,0 +1,20 @@
+{
+  "name": "REPLACE-ME",
+  "kind": "markov-pan",
+  "seed": 42,
+  "duration_ms": 60000,
+  "tick_ms": 250,
+  "bounds": [-74.05, 40.68, -73.89, 40.85],
+  "start": {
+    "lng": -73.97,
+    "lat": 40.78,
+    "zoom": 12.0
+  },
+  "params": {
+    "pan_speed_deg_per_s_at_z12": 0.002,
+    "pan_turn_std": 0.3,
+    "pan_speed_jitter": 0.2,
+    "zoom_change_prob_per_s": 0.0,
+    "zoom_range": [12, 12]
+  }
+}

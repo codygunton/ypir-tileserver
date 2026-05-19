@@ -4,6 +4,12 @@ A workload is a deterministic, replayable sequence of viewport states.
 The harness replays it against the frontend (via Playwright) and the
 frontend's measurement module records per-tile events to CSV.
 
+**Config = trajectory minus `frames`.** Edit the JSON, run
+`generate_markov.py path.json`, frames are filled in deterministically.
+Same params + same seed = same `frames`. Idempotent.
+
+Start from `template-markov.json` for new workloads.
+
 ## Schema
 
 ```json

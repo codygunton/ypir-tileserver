@@ -1,87 +1,107 @@
 #!/usr/bin/env python3
-"""Generate a Markov-style panning workload for replay.
+"""Generate (or regenerate) frames for a Markov-pan workload from a config JSON.
 
-Produces a deterministic JSON trajectory (viewport + zoom over time)
-bounded to a lng/lat box. Same seed + same params = same trajectory.
-
-Schema: see experiments/workloads/SCHEMA.md.
+The config and the trajectory share the same schema (see SCHEMA.md): a
+config is just a trajectory without the `frames` field. This script reads
+the config, fills in `frames` deterministically from `seed` + `params`,
+and writes the file back. Idempotent — same params + same seed = same file.
 
 Usage:
-    python generate_markov.py \\
-        --name pan-nyc-z12-60s \\
-        --bounds=-74.05,40.68,-73.89,40.85 \\
-        --start-lng -73.97 --start-lat 40.78 --start-zoom 12 \\
-        --duration-ms 60000 --tick-ms 250 \\
-        --seed 42 \\
-        --output pan-nyc-z12-60s.json
+    python generate_markov.py experiments/workloads/pan-nyc-z12-60s.json
+
+    # write to a different path
+    python generate_markov.py config.json --output out.json
+
+    # override the seed (useful for sweeps over the same config)
+    python generate_markov.py config.json --seed 7
+
+Required fields in the config:
+    name, kind ("markov-pan"), seed, duration_ms, tick_ms,
+    bounds [w,s,e,n], start {lng,lat,zoom}, params { ... }
+
+Where params has:
+    pan_speed_deg_per_s_at_z12, pan_turn_std, pan_speed_jitter,
+    zoom_change_prob_per_s, zoom_range [zmin, zmax]
 """
 
 import argparse
 import json
 import math
 import random
+import sys
 from pathlib import Path
 
 
-def parse_bounds(s: str) -> tuple[float, float, float, float]:
-    parts = [float(p) for p in s.split(",")]
-    if len(parts) != 4:
-        raise argparse.ArgumentTypeError("--bounds must be 'w,s,e,n' (four floats)")
-    w, s_, e, n = parts
-    if not (w < e and s_ < n):
-        raise argparse.ArgumentTypeError("--bounds must satisfy w<e and s<n")
-    return w, s_, e, n
+REQUIRED_PARAMS = (
+    "pan_speed_deg_per_s_at_z12",
+    "pan_turn_std",
+    "pan_speed_jitter",
+    "zoom_change_prob_per_s",
+    "zoom_range",
+)
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-def generate_markov_pan(args: argparse.Namespace) -> dict:
-    rng = random.Random(args.seed)
-    w, s, e, n = args.bounds
+def validate(cfg: dict) -> None:
+    if cfg.get("kind") != "markov-pan":
+        raise SystemExit(f"Config kind must be 'markov-pan' (got {cfg.get('kind')!r})")
+    for k in ("name", "seed", "duration_ms", "tick_ms", "bounds", "start", "params"):
+        if k not in cfg:
+            raise SystemExit(f"Config missing required field: {k}")
+    if len(cfg["bounds"]) != 4:
+        raise SystemExit("`bounds` must be [w, s, e, n]")
+    for k in ("lng", "lat", "zoom"):
+        if k not in cfg["start"]:
+            raise SystemExit(f"`start` missing required field: {k}")
+    for k in REQUIRED_PARAMS:
+        if k not in cfg["params"]:
+            raise SystemExit(f"`params` missing required field: {k}")
+    zmin, zmax = cfg["params"]["zoom_range"]
+    z0 = cfg["start"]["zoom"]
+    if not (zmin <= z0 <= zmax):
+        raise SystemExit(f"start.zoom={z0} outside zoom_range=[{zmin},{zmax}]")
 
-    # State
-    lng = args.start_lng
-    lat = args.start_lat
-    zoom = float(args.start_zoom)
-    heading = rng.uniform(0, 2 * math.pi)  # initial random direction
 
-    zmin, zmax = args.zoom_min, args.zoom_max
-    if not (zmin <= zoom <= zmax):
-        raise SystemExit(f"start_zoom {zoom} outside [{zmin},{zmax}]")
+def generate_frames(cfg: dict) -> list[dict]:
+    rng = random.Random(cfg["seed"])
+    w, s, e, n = cfg["bounds"]
+    lng = cfg["start"]["lng"]
+    lat = cfg["start"]["lat"]
+    zoom = float(cfg["start"]["zoom"])
+    heading = rng.uniform(0, 2 * math.pi)
 
-    tick_s = args.tick_ms / 1000.0
-    zoom_change_prob_per_tick = args.zoom_change_prob_per_s * tick_s
+    p = cfg["params"]
+    zmin, zmax = p["zoom_range"]
+    tick_s = cfg["tick_ms"] / 1000.0
+    zoom_change_prob_per_tick = p["zoom_change_prob_per_s"] * tick_s
 
     frames = []
-    num_frames = args.duration_ms // args.tick_ms
+    num_frames = cfg["duration_ms"] // cfg["tick_ms"]
 
     for i in range(num_frames):
-        t = i * args.tick_ms
         frames.append({
-            "t": t,
+            "t": i * cfg["tick_ms"],
             "lng": round(lng, 6),
             "lat": round(lat, 6),
             "zoom": round(zoom, 3),
         })
 
-        # Pan: heading drifts; speed jitters; magnitude scales inversely with 2^(z-12)
-        # so on-screen pan rate stays roughly constant across zooms.
-        heading += rng.gauss(0, args.pan_turn_std)
-        speed_scale = 2.0 ** (12 - zoom)  # higher zoom = smaller geographic step
-        speed = args.pan_speed_deg_per_s_at_z12 * speed_scale
-        speed *= 1.0 + rng.uniform(-args.pan_speed_jitter, args.pan_speed_jitter)
+        # Pan: heading drift + Mercator-corrected step. Speed scales with
+        # 2^(12-zoom) so on-screen pan rate stays roughly constant across zooms.
+        heading += rng.gauss(0, p["pan_turn_std"])
+        speed_scale = 2.0 ** (12 - zoom)
+        speed = p["pan_speed_deg_per_s_at_z12"] * speed_scale
+        speed *= 1.0 + rng.uniform(-p["pan_speed_jitter"], p["pan_speed_jitter"])
 
-        # Step in (lng, lat). Use cos(lat) to keep visual speed roughly constant
-        # in longitude direction (rough Mercator correction).
         dlng = speed * math.cos(heading) * tick_s / max(math.cos(math.radians(lat)), 0.1)
         dlat = speed * math.sin(heading) * tick_s
         lng = clamp(lng + dlng, w, e)
         lat = clamp(lat + dlat, s, n)
 
-        # If we hit a wall, rotate heading toward the box interior so we slide
-        # along the edge rather than getting stuck.
+        # Slide along walls rather than getting stuck in a corner.
         if lng == w and math.cos(heading) < 0:
             heading = math.pi - heading
         if lng == e and math.cos(heading) > 0:
@@ -91,63 +111,43 @@ def generate_markov_pan(args: argparse.Namespace) -> dict:
         if lat == n and math.sin(heading) > 0:
             heading = -heading
 
-        # Zoom: discrete ±1 events with bounded probability per tick.
+        # Discrete ±1 zoom events.
         if rng.random() < zoom_change_prob_per_tick:
             direction = rng.choice([-1, 1])
             new_zoom = zoom + direction
             if zmin <= new_zoom <= zmax:
                 zoom = new_zoom
 
-    return {
-        "name": args.name,
-        "kind": "markov-pan",
-        "seed": args.seed,
-        "duration_ms": args.duration_ms,
-        "tick_ms": args.tick_ms,
-        "bounds": list(args.bounds),
-        "start": {
-            "lng": args.start_lng,
-            "lat": args.start_lat,
-            "zoom": args.start_zoom,
-        },
-        "params": {
-            "pan_speed_deg_per_s_at_z12": args.pan_speed_deg_per_s_at_z12,
-            "pan_turn_std": args.pan_turn_std,
-            "pan_speed_jitter": args.pan_speed_jitter,
-            "zoom_change_prob_per_s": args.zoom_change_prob_per_s,
-            "zoom_range": [zmin, zmax],
-        },
-        "frames": frames,
-    }
+    return frames
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--name", required=True)
-    p.add_argument("--bounds", required=True, type=parse_bounds,
-                   help="Lng/lat clamp box as w,s,e,n (e.g. -74.05,40.68,-73.89,40.85)")
-    p.add_argument("--start-lng", required=True, type=float)
-    p.add_argument("--start-lat", required=True, type=float)
-    p.add_argument("--start-zoom", required=True, type=float)
-    p.add_argument("--duration-ms", type=int, default=60000)
-    p.add_argument("--tick-ms", type=int, default=250)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--pan-speed-deg-per-s-at-z12", type=float, default=0.002,
-                   help="Pan speed at z=12 in degrees/sec. ~0.002 ≈ a slow steady pan.")
-    p.add_argument("--pan-turn-std", type=float, default=0.3,
-                   help="Per-tick heading change std-dev (radians). 0.3 ≈ ~17°.")
-    p.add_argument("--pan-speed-jitter", type=float, default=0.2)
-    p.add_argument("--zoom-change-prob-per-s", type=float, default=0.05,
-                   help="Per-second probability of a discrete ±1 zoom event.")
-    p.add_argument("--zoom-min", type=int, default=9)
-    p.add_argument("--zoom-max", type=int, default=13)
-    p.add_argument("--output", required=True, type=Path)
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("config", type=Path,
+                   help="Path to the config / trajectory JSON. Frames are regenerated in place.")
+    p.add_argument("--output", "-o", type=Path,
+                   help="Write to a different path instead of overwriting the config")
+    p.add_argument("--seed", type=int,
+                   help="Override the seed in the config (useful for sweeps)")
     args = p.parse_args()
 
-    trajectory = generate_markov_pan(args)
-    args.output.write_text(json.dumps(trajectory, indent=2))
-    print(f"Wrote {args.output} — {len(trajectory['frames'])} frames, "
-          f"duration {args.duration_ms} ms, seed {args.seed}")
+    if not args.config.exists():
+        sys.exit(f"Config not found: {args.config}")
+
+    cfg = json.loads(args.config.read_text())
+    if args.seed is not None:
+        cfg["seed"] = args.seed
+    validate(cfg)
+
+    cfg["frames"] = generate_frames(cfg)
+
+    out_path = args.output or args.config
+    out_path.write_text(json.dumps(cfg, indent=2))
+    print(f"Wrote {out_path} — {len(cfg['frames'])} frames, "
+          f"duration {cfg['duration_ms']} ms, seed {cfg['seed']}")
 
 
 if __name__ == "__main__":

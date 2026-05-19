@@ -42,6 +42,17 @@ runs/<config-name>-<git-sha>-<timestamp>/
   trajectory.json            # the exact workload that was replayed
 ```
 
+## Authoring a workload
+
+```bash
+cp workloads/template-markov.json workloads/my-workload.json
+# edit name / bounds / start / params in the JSON
+python workloads/generate_markov.py workloads/my-workload.json
+```
+
+The config and the materialized trajectory share the same file — frames
+are added in place. Re-run after editing any param to regenerate.
+
 ## Running a single cell
 
 Prereqs (one-time). Pick one of:
