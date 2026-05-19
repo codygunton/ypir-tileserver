@@ -52,6 +52,9 @@ plt.savefig("../paper/figures/latency-cdf-nyc.png", dpi=200, bbox_inches="tight"
 | `latency_ms` | events.csv | End-to-end fetch time |
 | `bytes_decoded` | events.csv | Decoded PBF size after decryption + decompression |
 | `error` | events.csv | Error name if the fetch failed |
+| `frame_idx` | events.csv | Most recent trajectory frame at event time |
+| `pan_lng` / `pan_lat` / `pan_zoom` | events.csv | Viewport state at that frame |
+| `pan_speed_deg_per_s` | events.csv | Instantaneous geographic pan speed between this frame and the previous one |
 | `workload` | meta.json | E.g., `pan-nyc-urban-z12-seed7` |
 | `run_mode` | meta.json | `pir` or `http` |
 | `seed` | meta.json | RNG seed used to generate the trajectory |

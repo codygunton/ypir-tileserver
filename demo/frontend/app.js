@@ -205,12 +205,33 @@ async function initialize() {
 
         // Expose a small replay/inspection API for the experiment harness.
         // Always on — small footprint, no behavior change when unused.
+        let lastFrame = null;
         window.__experimentReplay = {
             ready: false,
+            currentTrajectoryState: null,
             getMode: () => MODE,
             isReady: () => window.__experimentReplay.ready,
-            pushFrame: ({ lng, lat, zoom }) => {
+            pushFrame: ({ t, lng, lat, zoom }) => {
                 map.jumpTo({ center: [lng, lat], zoom });
+                let pan_speed_deg_per_s = 0;
+                let frame_idx = 0;
+                if (lastFrame !== null) {
+                    const dt_s = (t - lastFrame.t) / 1000;
+                    if (dt_s > 0) {
+                        const dlng = lng - lastFrame.lng;
+                        const dlat = lat - lastFrame.lat;
+                        pan_speed_deg_per_s = Math.sqrt(dlng * dlng + dlat * dlat) / dt_s;
+                    }
+                    frame_idx = lastFrame.frame_idx + 1;
+                }
+                window.__experimentReplay.currentTrajectoryState = {
+                    frame_idx,
+                    pan_lng: lng,
+                    pan_lat: lat,
+                    pan_zoom: zoom,
+                    pan_speed_deg_per_s: Number(pan_speed_deg_per_s.toFixed(6)),
+                };
+                lastFrame = { t, lng, lat, frame_idx };
             },
             getEvents: () => measurement.getEvents ? measurement.getEvents() : [],
             getStats: () => measurement.stats(),
@@ -241,13 +262,19 @@ async function initialize() {
 // --- Basemap zoom threshold: z <= this are served as static tiles (no PIR) ---
 const BASEMAP_MAX_ZOOM = 8;
 
+// Current trajectory state at event time — stamped onto every recordQuery.
+// Returns {} when not in a replay (so normal browsing still works).
+function trajectoryState() {
+    return window.__experimentReplay?.currentTrajectoryState || {};
+}
+
 // --- Tile fetching: basemap (static) or PIR depending on zoom ---
 async function fetchTileViaPIR(z, x, y, abortSignal) {
     const key = `${z}/${x}/${y}`;
 
     const cached = tileCache.get(key);
     if (cached) {
-        measurement.recordQuery({ kind: 'cache-hit', key, z });
+        measurement.recordQuery({ kind: 'cache-hit', key, z, ...trajectoryState() });
         return cached;
     }
 
@@ -305,6 +332,7 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
             slots: slots.length,
             latency_ms: Math.round(elapsed),
             bytes_decoded: pbf.byteLength,
+            ...trajectoryState(),
         });
         console.log(`${tag} ${key}: OK ${slots.length} slot(s) in ${elapsed.toFixed(0)}ms`);
         return pbf;
@@ -317,6 +345,7 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
                 z,
                 slots: slots.length,
                 error: e?.name || 'error',
+                ...trajectoryState(),
             });
         }
         return new ArrayBuffer(0);

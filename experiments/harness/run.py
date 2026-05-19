@@ -119,7 +119,12 @@ async def run_replay(args: argparse.Namespace) -> None:
                 print(f"  Behind by {-wait*1000:.0f}ms at frame t={frame['t']}ms")
             await page.evaluate(
                 "(f) => window.__experimentReplay.pushFrame(f)",
-                {"lng": frame["lng"], "lat": frame["lat"], "zoom": frame["zoom"]},
+                {
+                    "t": frame["t"],
+                    "lng": frame["lng"],
+                    "lat": frame["lat"],
+                    "zoom": frame["zoom"],
+                },
             )
         replay_elapsed_s = time.monotonic() - t_start
         print(f"Replay finished in {replay_elapsed_s:.1f}s. Waiting for in-flight tiles to settle...")
