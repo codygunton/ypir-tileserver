@@ -5,6 +5,11 @@ import { decodeSlotToPBF, decodeMultiSlotToPBF } from '/shared/tile-decoder.js';
 import { initMap } from '/shared/map-setup.js';
 import * as measurement from './src/measurement.js';
 
+// --- Mode: ?mode=http for the non-PIR baseline, default = PIR ---
+const MODE = (new URLSearchParams(window.location.search).get('mode') || 'pir').toLowerCase();
+const IS_PIR = MODE === 'pir';
+measurement.setMode(MODE);
+
 // --- State ---
 let client = null;
 let sessionUuid = null;
@@ -92,6 +97,18 @@ const ypirBackend = {
 
 const dispatcher = new TileBatchDispatcher(ypirBackend, 100);
 
+// --- HTTP baseline: fetch raw slots directly, no batching ---
+async function fetchSlotsHttp(slots, abortSignal) {
+    const responses = await Promise.all(slots.map(async (idx) => {
+        const r = await fetch(`/raw/${idx}`, { signal: abortSignal });
+        if (!r.ok) throw new Error(`/raw/${idx} failed: ${r.status}`);
+        return new Uint8Array(await r.arrayBuffer());
+    }));
+    return responses.length > 1
+        ? decodeMultiSlotToPBF(responses)
+        : decodeSlotToPBF(responses[0]);
+}
+
 // --- UI helpers ---
 function setStatus(msg) {
     document.getElementById('loading-status').textContent = msg;
@@ -109,49 +126,55 @@ async function initialize() {
             const dsResp = await fetch('/api/dataset');
             if (dsResp.ok) {
                 const ds = await dsResp.json();
-                document.getElementById('loading-dataset').textContent = `Dataset: ${ds.name}`;
+                const modeLabel = IS_PIR ? 'PIR mode' : 'HTTP baseline mode';
+                document.getElementById('loading-dataset').textContent = `Dataset: ${ds.name} — ${modeLabel}`;
             }
         } catch { /* non-critical */ }
 
-        setStatus('Loading WASM module...');
-        setProgress(5);
-        await init();
+        if (IS_PIR) {
+            setStatus('Loading WASM module...');
+            setProgress(5);
+            await init();
 
-        setStatus('Fetching PIR parameters...');
-        setProgress(10);
-        const paramsResp = await fetch('/api/params');
-        if (!paramsResp.ok) throw new Error('Failed to fetch /api/params');
-        pirParams = await paramsResp.json();
-        console.log('PIR params:', pirParams);
-        measurement.setWireSizes({
-            query_bytes: pirParams.query_bytes,
-            response_bytes: pirParams.response_bytes,
-        });
+            setStatus('Fetching PIR parameters...');
+            setProgress(10);
+            const paramsResp = await fetch('/api/params');
+            if (!paramsResp.ok) throw new Error('Failed to fetch /api/params');
+            pirParams = await paramsResp.json();
+            console.log('PIR params:', pirParams);
+            measurement.setWireSizes({
+                query_bytes: pirParams.query_bytes,
+                response_bytes: pirParams.response_bytes,
+            });
 
-        setStatus('Initializing YPIR PIR client...');
-        setProgress(15);
-        client = new YpirClient(
-            pirParams.ypir_params,
-            BigInt(pirParams.rlwe_q_prime_1),
-            BigInt(pirParams.rlwe_q_prime_2)
-        );
-        console.log(`YPIR client: ${pirParams.num_items} items, ${client.query_bytes()} B/query, ${client.num_instances()} instances`);
+            setStatus('Initializing YPIR PIR client...');
+            setProgress(15);
+            client = new YpirClient(
+                pirParams.ypir_params,
+                BigInt(pirParams.rlwe_q_prime_1),
+                BigInt(pirParams.rlwe_q_prime_2)
+            );
+            console.log(`YPIR client: ${pirParams.num_items} items, ${client.query_bytes()} B/query, ${client.num_instances()} instances`);
 
-        setStatus('Generating encryption keys...');
-        setProgress(20);
-        const setupBytes = client.generate_keys();
-        console.log(`Setup data: ${(setupBytes.length / 1024).toFixed(1)} KB`);
+            setStatus('Generating encryption keys...');
+            setProgress(20);
+            const setupBytes = client.generate_keys();
+            console.log(`Setup data: ${(setupBytes.length / 1024).toFixed(1)} KB`);
 
-        setStatus(`Uploading keys (${(setupBytes.length / 1024).toFixed(1)} KB)...`);
-        setProgress(50);
-        const setupResp = await fetch('/api/setup', {
-            method: 'POST',
-            body: setupBytes,
-            headers: { 'Content-Type': 'application/octet-stream' },
-        });
-        if (!setupResp.ok) throw new Error(`Failed to upload keys: ${setupResp.status}`);
-        sessionUuid = (await setupResp.text()).trim();
-        console.log(`Session UUID: ${sessionUuid}`);
+            setStatus(`Uploading keys (${(setupBytes.length / 1024).toFixed(1)} KB)...`);
+            setProgress(50);
+            const setupResp = await fetch('/api/setup', {
+                method: 'POST',
+                body: setupBytes,
+                headers: { 'Content-Type': 'application/octet-stream' },
+            });
+            if (!setupResp.ok) throw new Error(`Failed to upload keys: ${setupResp.status}`);
+            sessionUuid = (await setupResp.text()).trim();
+            console.log(`Session UUID: ${sessionUuid}`);
+        } else {
+            console.log('HTTP baseline mode: skipping PIR setup');
+            setProgress(50);
+        }
 
         setStatus('Loading tile mapping...');
         setProgress(80);
@@ -160,6 +183,14 @@ async function initialize() {
         const mappingData = await mappingResp.json();
         tileMapping = new Map(Object.entries(mappingData.tiles));
         console.log(`Tile mapping: ${tileMapping.size} tiles, z${mappingData.min_zoom}-${mappingData.max_zoom}`);
+
+        // In HTTP mode, set wire sizes from the dataset metadata (no PIR params available).
+        if (!IS_PIR) {
+            measurement.setWireSizes({
+                query_bytes: 0,
+                response_bytes: mappingData.tile_size || 0,
+            });
+        }
 
         setStatus('Starting map...');
         setProgress(95);
@@ -175,7 +206,9 @@ async function initialize() {
         setProgress(100);
         setTimeout(() => {
             document.getElementById('loading-screen').style.display = 'none';
-            document.getElementById('pir-badge').style.display = 'flex';
+            const badge = document.getElementById('pir-badge');
+            badge.style.display = 'flex';
+            badge.querySelector('strong').textContent = IS_PIR ? 'YPIR PIR Active' : 'HTTP Baseline Active';
             document.getElementById('cpu-metrics').style.display = 'block';
             document.getElementById('measurement-panel').style.display = 'block';
             updateMeasurementPanel();
@@ -228,16 +261,19 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
         }
     }
 
-    // PIR tiles: private retrieval
+    // High-zoom tiles: PIR or HTTP baseline depending on mode
     const pirIndex = tileMapping.get(key);
     if (pirIndex === undefined) return new ArrayBuffer(0);
 
     const slots = Array.isArray(pirIndex) ? pirIndex : [pirIndex];
-    console.log(`PIR fetch: ${key} -> ${slots.length} slot(s) [${slots.join(',')}]`);
+    const tag = IS_PIR ? 'PIR' : 'HTTP';
+    console.log(`${tag} fetch: ${key} -> ${slots.length} slot(s) [${slots.join(',')}]`);
 
     const t0 = performance.now();
     try {
-        const pbf = await dispatcher.enqueue(z, x, y, slots, abortSignal);
+        const pbf = IS_PIR
+            ? await dispatcher.enqueue(z, x, y, slots, abortSignal)
+            : await fetchSlotsHttp(slots, abortSignal);
         if (pbf.byteLength === 0) return pbf;
 
         tileCache.set(key, pbf);
@@ -248,19 +284,20 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
         lastQueryMs = elapsed;
         updatePirStats();
         measurement.recordQuery({
-            kind: 'pir',
+            kind: IS_PIR ? 'pir' : 'http',
             key,
             z,
             slots: slots.length,
             latency_ms: Math.round(elapsed),
+            bytes_decoded: pbf.byteLength,
         });
-        console.log(`PIR ${key}: OK ${slots.length} slot(s) in ${elapsed.toFixed(0)}ms`);
+        console.log(`${tag} ${key}: OK ${slots.length} slot(s) in ${elapsed.toFixed(0)}ms`);
         return pbf;
     } catch (e) {
         if (e?.name !== 'AbortError') {
-            console.error(`PIR ${key}: fetch failed:`, e?.message || e);
+            console.error(`${tag} ${key}: fetch failed:`, e?.message || e);
             measurement.recordQuery({
-                kind: 'pir',
+                kind: IS_PIR ? 'pir' : 'http',
                 key,
                 z,
                 slots: slots.length,
@@ -292,7 +329,8 @@ function updateMeasurementPanel() {
     const el = document.getElementById('measurement-body');
     if (!el) return;
     el.innerHTML = `
-        <div class="metrics-row"><span class="metrics-label">PIR queries</span><span class="metrics-value">${s.pir}</span></div>
+        <div class="metrics-row"><span class="metrics-label">Mode</span><span class="metrics-value">${s.mode.toUpperCase()}</span></div>
+        <div class="metrics-row"><span class="metrics-label">Fetches</span><span class="metrics-value">${s.fetches}</span></div>
         <div class="metrics-row"><span class="metrics-label">Cache hits</span><span class="metrics-value">${s.cacheHits} (${(s.hitRate * 100).toFixed(0)}%)</span></div>
         <div class="metrics-row"><span class="metrics-label">p50 / p95</span><span class="metrics-value">${s.p50Ms.toFixed(0)} / ${s.p95Ms.toFixed(0)} ms</span></div>
         <div class="metrics-row"><span class="metrics-label">Bytes up</span><span class="metrics-value">${fmtBytes(s.bytesUp)}</span></div>

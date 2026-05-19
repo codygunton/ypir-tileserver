@@ -26,6 +26,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: PROXY_TARGET, changeOrigin: false },
       '/basemap': { target: PROXY_TARGET, changeOrigin: false },
+      '/raw': { target: PROXY_TARGET, changeOrigin: false },
     },
   },
   resolve: {
