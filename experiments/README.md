@@ -44,16 +44,35 @@ runs/<config-name>-<git-sha>-<timestamp>/
 
 ## Running a single cell
 
+Prereqs (one-time):
+
 ```bash
-cd experiments
-python harness/run.py --config configs/<name>.toml
+pip install -r harness/requirements.txt
+playwright install chromium
 ```
+
+Stack must be running first — Rust YPIR server + Flask proxy +
+vite dev server (see `demo/frontend/README.md`). Then:
+
+```bash
+# PIR run
+python harness/run.py --workload workloads/pan-nyc-z12-60s.json --mode pir
+
+# HTTP baseline run
+python harness/run.py --workload workloads/pan-nyc-z12-60s.json --mode http
+
+# Debug with visible browser
+python harness/run.py --workload workloads/pan-nyc-z12-60s.json --mode pir --headed
+```
+
+Each run drops a directory under `runs/` with `events.csv`,
+`trajectory.json`, `meta.json` (git SHA, hostname, stats), and
+`console.log` (browser stdout).
 
 ## Sweeping all cells
 
-```bash
-python harness/sweep.py --matrix configs/matrix.toml
-```
+Not implemented yet. Will be `harness/sweep.py --matrix configs/matrix.toml`
+once the bundling variants and per-cell configs land.
 
 ## Notes
 

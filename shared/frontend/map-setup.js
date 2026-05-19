@@ -209,4 +209,6 @@ export function initMap(mappingData, fetchTileFn, opts = {}) {
         map.on('zoomend', () => opts.onZoom(map.getZoom()));
         map.on('load', () => opts.onZoom(map.getZoom()));
     }
+
+    return map;
 }

@@ -97,3 +97,7 @@ export function clearEvents() {
 export function eventCount() {
   return events.length;
 }
+
+export function getEvents() {
+  return events.slice();
+}

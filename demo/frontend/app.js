@@ -194,7 +194,7 @@ async function initialize() {
 
         setStatus('Starting map...');
         setProgress(95);
-        initMap(mappingData, fetchTileViaPIR, {
+        const map = initMap(mappingData, fetchTileViaPIR, {
             zoom: 6,
             center: [-73.5, 42.0],
             onZoom: (z) => {
@@ -202,6 +202,20 @@ async function initialize() {
                 updatePirStats();
             },
         });
+
+        // Expose a small replay/inspection API for the experiment harness.
+        // Always on — small footprint, no behavior change when unused.
+        window.__experimentReplay = {
+            ready: false,
+            getMode: () => MODE,
+            isReady: () => window.__experimentReplay.ready,
+            pushFrame: ({ lng, lat, zoom }) => {
+                map.jumpTo({ center: [lng, lat], zoom });
+            },
+            getEvents: () => measurement.getEvents ? measurement.getEvents() : [],
+            getStats: () => measurement.stats(),
+            clearEvents: () => measurement.clearEvents(),
+        };
 
         setProgress(100);
         setTimeout(() => {
@@ -212,6 +226,7 @@ async function initialize() {
             document.getElementById('cpu-metrics').style.display = 'block';
             document.getElementById('measurement-panel').style.display = 'block';
             updateMeasurementPanel();
+            window.__experimentReplay.ready = true;
         }, 300);
 
         startMetricsPolling();
