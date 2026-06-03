@@ -78,6 +78,24 @@ def load_runs(
         df["git_sha"] = meta.get("git_sha")
         df["started_at"] = meta.get("started_at")
         df["hostname"] = meta.get("hostname")
+
+        # Flatten meta.stats onto every event row as run_stat_<field>.
+        # These are run-level totals, so they repeat across all events
+        # within a run. Take .iloc[0] after groupby("run_name") to get
+        # one row per run for per-run aggregates.
+        stats = meta.get("stats") or {}
+        for k, v in stats.items():
+            if not isinstance(v, (int, float, str, bool)) and v is not None:
+                continue
+            df[f"run_stat_{k}"] = v
+
+        # Convenience: wire bytes per fetched tile (constant within a run).
+        # PIR  ~ slots × response_bytes per slot (≈100 KB per slot)
+        # HTTP ~ slots × tile_size      per slot (≈ 20 KB per slot)
+        fetches_in_run = stats.get("fetches") or 0
+        if fetches_in_run:
+            df["wire_bytes_down_per_fetch"] = (stats.get("bytesDown") or 0) / fetches_in_run
+            df["wire_bytes_up_per_fetch"] = (stats.get("bytesUp") or 0) / fetches_in_run
         frames.append(df)
 
     if skipped:
