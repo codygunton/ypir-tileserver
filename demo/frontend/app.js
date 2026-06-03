@@ -282,6 +282,11 @@ async function initialize() {
             clearEvents: () => measurement.clearEvents(),
         };
 
+        // Slot-boundary overlay: draw edges only between tiles in different
+        // PIR slots. Tiles inside the same bundled slot share continuous
+        // regions (no line between them) so bundling is legible at a glance.
+        setupSlotBoundaryOverlay(map);
+
         setProgress(100);
         setTimeout(() => {
             document.getElementById('loading-screen').style.display = 'none';
@@ -296,6 +301,14 @@ async function initialize() {
             const tb = document.getElementById('toggle-tile-boundaries');
             tb.addEventListener('change', () => {
                 map.showTileBoundaries = tb.checked;
+            });
+
+            // Slot boundary toggle.
+            const sb = document.getElementById('toggle-slot-boundaries');
+            sb.addEventListener('change', () => {
+                map.setLayoutProperty('slot-boundaries', 'visibility',
+                    sb.checked ? 'visible' : 'none');
+                if (sb.checked) refreshSlotBoundaries(map);
             });
 
             updateMeasurementPanel();
@@ -435,6 +448,110 @@ function updateMeasurementPanel() {
         <div class="metrics-row"><span class="metrics-label">Bytes up</span><span class="metrics-value">${fmtBytes(s.bytesUp)}</span></div>
         <div class="metrics-row"><span class="metrics-label">Bytes down</span><span class="metrics-value">${fmtBytes(s.bytesDown)}</span></div>
     `;
+}
+
+// --- Slot-boundary overlay ---
+// Highlights inter-slot edges in the current viewport so bundling is
+// visually legible: tiles inside one bundled slot appear as continuous
+// regions, while singleton tiles keep all four borders.
+
+function tileToLngLat(z, x, y) {
+    const n = 1 << z;
+    const lng = x / n * 360 - 180;
+    const lat_rad = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
+    return [lng, lat_rad * 180 / Math.PI];
+}
+
+// Representative slot id for a tile, regardless of mapping form. Tiles in
+// the same bundle return the same id; tiles in different slots return
+// different ids. Returns null if the tile isn't in the mapping.
+function slotForTile(z, x, y) {
+    const m = tileMapping?.get(`${z}/${x}/${y}`);
+    if (m === undefined) return null;
+    return mappingSlots(m)[0];
+}
+
+function setupSlotBoundaryOverlay(map) {
+    map.addSource('slot-boundaries', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+    });
+    map.addLayer({
+        id: 'slot-boundaries',
+        type: 'line',
+        source: 'slot-boundaries',
+        layout: { visibility: 'none' },
+        paint: {
+            'line-color': '#ff5252',
+            'line-width': 2.0,
+            'line-opacity': 0.9,
+        },
+    });
+    map.on('moveend', () => {
+        if (map.getLayoutProperty('slot-boundaries', 'visibility') === 'visible') {
+            refreshSlotBoundaries(map);
+        }
+    });
+}
+
+function refreshSlotBoundaries(map) {
+    const z = Math.round(map.getZoom());
+    // Only meaningful for PIR-zone tiles; below the basemap cutoff every
+    // tile is fetched in the clear, slot concept doesn't apply.
+    if (z <= BASEMAP_MAX_ZOOM) {
+        map.getSource('slot-boundaries').setData({ type: 'FeatureCollection', features: [] });
+        return;
+    }
+    const bounds = map.getBounds();
+    const w = bounds.getWest(), e = bounds.getEast();
+    const s = bounds.getSouth(), n = bounds.getNorth();
+
+    // Tile X-range from lng bounds; tile Y-range from lat bounds (Web Mercator).
+    const N = 1 << z;
+    const xMin = Math.max(0, Math.floor((w + 180) / 360 * N) - 1);
+    const xMax = Math.min(N - 1, Math.ceil((e + 180) / 360 * N) + 1);
+    const yFromLat = (lat) => {
+        const r = lat * Math.PI / 180;
+        return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * N);
+    };
+    const yMin = Math.max(0, yFromLat(n) - 1);
+    const yMax = Math.min(N - 1, yFromLat(s) + 1);
+
+    const features = [];
+    for (let x = xMin; x <= xMax; x++) {
+        for (let y = yMin; y <= yMax; y++) {
+            const here = slotForTile(z, x, y);
+            if (here === null) continue;
+
+            // Only emit the N and W edges of each tile — every shared
+            // edge is owned by exactly one tile, naturally deduping.
+            const nw = tileToLngLat(z, x, y);
+            const ne = tileToLngLat(z, x + 1, y);
+            const sw = tileToLngLat(z, x, y + 1);
+
+            // N edge: this tile vs (z, x, y-1).
+            const above = slotForTile(z, x, y - 1);
+            if (above !== here) {
+                features.push({
+                    type: 'Feature',
+                    geometry: { type: 'LineString', coordinates: [nw, ne] },
+                });
+            }
+            // W edge: this tile vs (z, x-1, y).
+            const left = slotForTile(z, x - 1, y);
+            if (left !== here) {
+                features.push({
+                    type: 'Feature',
+                    geometry: { type: 'LineString', coordinates: [nw, sw] },
+                });
+            }
+        }
+    }
+
+    map.getSource('slot-boundaries').setData({
+        type: 'FeatureCollection',
+        features,
+    });
 }
 
 // --- CPU metrics polling ---
