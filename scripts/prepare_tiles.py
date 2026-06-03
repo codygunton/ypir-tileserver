@@ -153,18 +153,51 @@ def pack_tile_into_slots(data: bytes, tile_size: int) -> list[bytearray]:
     return slots
 
 
+def _pack_bundle_slot(
+    bundle: list[tuple[str, bytes]],
+    tile_size: int,
+) -> tuple[bytearray, dict[str, dict]]:
+    """Concatenate gzip blobs into one slot, return (slot_bytes, mapping_entries).
+
+    Slot layout:
+        [gzip_tile_a][gzip_tile_b]...[gzip_tile_n][zero padding to tile_size]
+
+    No length prefixes — client looks up `offset` and `length` per tile in
+    the mapping. mapping_entries is keyed by tile key; `slot` is filled in
+    by the caller (which knows the slot index).
+    """
+    slot = bytearray()
+    entries: dict[str, dict] = {}
+    for key, data in bundle:
+        offset = len(slot)
+        slot.extend(data)
+        entries[key] = {"offset": offset, "length": len(data)}
+    if len(slot) > tile_size:
+        raise AssertionError(f"bundle overflow: {len(slot)} > {tile_size}")
+    if len(slot) < tile_size:
+        slot.extend(b"\x00" * (tile_size - len(slot)))
+    return slot, entries
+
+
 def extract_tiles_from_mbtiles(
     mbtiles_path: str,
     max_zoom: int,
     max_tiles: int,
     tile_size: int,
     min_zoom: int = 0,
+    bundle_grid: int = 1,
 ) -> tuple[bytearray, dict]:
-    """Read tiles from an MBTiles file, filter to US bbox, split oversized tiles.
+    """Read tiles from an MBTiles file, filter to US bbox, optionally bundle
+    adjacent tiles into shared slots, split oversized tiles.
 
-    Returns (slot_data, tile_mapping) where slot_data is a bytearray of
-    concatenated fixed-size PIR slots and tile_mapping is the JSON-serialisable
-    metadata dict.
+    `bundle_grid=N` groups tiles into N×N cells at each zoom; if the total
+    gzip size of a cell fits in one slot, the cell goes into one shared
+    slot (bundled). bundle_grid=1 disables bundling (current behavior).
+
+    Returns (slot_data, tile_mapping). Mapping entries may be:
+        int                   — single-slot whole-slot tile
+        list[int]             — multi-slot whole-tile span (oversized)
+        {slot,offset,length}  — bundled into a shared slot
     """
     if not os.path.isfile(mbtiles_path):
         log.error("MBTiles file not found: %s", mbtiles_path)
@@ -181,48 +214,69 @@ def extract_tiles_from_mbtiles(
     )
     cursor.execute(query, (min_zoom, max_zoom))
 
-    slot_data = bytearray()
-    tiles_dict: dict[str, int | list[int]] = {}
-    tile_count = 0
-    slot_index = 0
-    split_count = 0
+    # Stage 1: collect bbox-filtered tiles, grouped by (zoom, cell_x, cell_y).
+    # cell_x = tile_x // bundle_grid; cell_y = y_xyz // bundle_grid.
+    from collections import defaultdict
+    cells: dict[tuple[int, int, int], list[tuple[str, bytes]]] = defaultdict(list)
     skipped_outside = 0
+    raw_tile_count = 0
 
     for zoom_level, tile_column, tile_row, data in cursor:
-        # MBTiles uses TMS Y-axis convention — convert to XYZ.
         y_xyz = (1 << zoom_level) - 1 - tile_row
-
         if not is_in_us_bbox(zoom_level, tile_column, y_xyz):
             skipped_outside += 1
             continue
-
-        slots = pack_tile_into_slots(data, tile_size)
-        num_slots = len(slots)
-
-        for s in slots:
-            slot_data.extend(s)
-
         key = f"{zoom_level}/{tile_column}/{y_xyz}"
-        if num_slots == 1:
-            tiles_dict[key] = slot_index
-        else:
-            tiles_dict[key] = list(range(slot_index, slot_index + num_slots))
-            split_count += 1
-
-        slot_index += num_slots
-        tile_count += 1
-
-        if tile_count >= max_tiles:
-            log.info("Reached max tiles limit (%d), stopping.", max_tiles)
+        cell = (zoom_level, tile_column // bundle_grid, y_xyz // bundle_grid)
+        cells[cell].append((key, data))
+        raw_tile_count += 1
+        if raw_tile_count >= max_tiles:
+            log.info("Reached max tiles limit (%d), stopping read.", max_tiles)
             break
 
     conn.close()
 
+    # Stage 2: per cell, decide bundle-into-one-slot vs per-tile fallback.
+    slot_data = bytearray()
+    tiles_dict: dict[str, int | list[int] | dict] = {}
+    slot_index = 0
+    tile_count = 0
+    bundled_cell_count = 0
+    bundled_tile_count = 0
+    split_count = 0
+
+    # Reserve nothing for headers in a bundle; client uses mapping offsets.
+    for cell, tiles in cells.items():
+        total = sum(len(d) for _, d in tiles)
+        # Bundle if more than one tile in the cell and total fits.
+        if bundle_grid > 1 and len(tiles) > 1 and total <= tile_size:
+            slot_bytes, entries = _pack_bundle_slot(tiles, tile_size)
+            slot_data.extend(slot_bytes)
+            for k, entry in entries.items():
+                tiles_dict[k] = {"slot": slot_index, **entry}
+            slot_index += 1
+            bundled_cell_count += 1
+            bundled_tile_count += len(tiles)
+            tile_count += len(tiles)
+        else:
+            # Per-tile fall-back: same as the unbundled path.
+            for key, data in tiles:
+                slots = pack_tile_into_slots(data, tile_size)
+                num_slots = len(slots)
+                for s in slots:
+                    slot_data.extend(s)
+                if num_slots == 1:
+                    tiles_dict[key] = slot_index
+                else:
+                    tiles_dict[key] = list(range(slot_index, slot_index + num_slots))
+                    split_count += 1
+                slot_index += num_slots
+                tile_count += 1
+
     log.info(
-        "Extracted %d tiles (%d split across multiple slots) into %d PIR slots",
-        tile_count,
-        split_count,
-        slot_index,
+        "Extracted %d tiles into %d PIR slots "
+        "(bundled %d tiles into %d shared slots; %d tiles split across multiple slots)",
+        tile_count, slot_index, bundled_tile_count, bundled_cell_count, split_count,
     )
     log.info("Skipped %d tiles outside US bbox", skipped_outside)
 
@@ -234,6 +288,7 @@ def extract_tiles_from_mbtiles(
         "num_tiles": tile_count,
         "num_pir_slots": slot_index,
         "tile_size": tile_size,
+        "bundle_grid": bundle_grid,
         "center": [round(center_lon, 2), round(center_lat, 2)],
         "min_zoom": 0,
         "max_zoom": actual_max_zoom,
@@ -394,6 +449,16 @@ def parse_args() -> argparse.Namespace:
         default=1000,
         help="Number of synthetic tiles to generate (default: 1000)",
     )
+    parser.add_argument(
+        "--bundle-grid",
+        type=int,
+        default=1,
+        help=(
+            "Bundle N×N adjacent tiles into shared slots when they fit "
+            "(default: 1 = no bundling). Suggested: 2 (2×2) for "
+            "low-density terrain."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -434,6 +499,7 @@ def main() -> None:
             max_tiles=args.max_tiles,
             tile_size=args.tile_size,
             min_zoom=args.min_zoom,
+            bundle_grid=args.bundle_grid,
         )
 
     write_output(args.output, slot_data, tile_mapping)
