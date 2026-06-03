@@ -76,6 +76,10 @@ def load_runs(
         df["run_mode"] = meta.get("mode")     # 'run_mode' to avoid clash with event-level 'mode'
         df["seed"] = meta.get("seed")
         df["dataset_name"] = meta.get("dataset_name")
+        df["num_tiles"] = meta.get("num_tiles")
+        df["num_pir_slots"] = meta.get("num_pir_slots")
+        df["bundle_grid"] = meta.get("bundle_grid")
+        df["tiles_per_slot"] = meta.get("tiles_per_slot")
         df["git_sha"] = meta.get("git_sha")
         df["started_at"] = meta.get("started_at")
         df["hostname"] = meta.get("hostname")

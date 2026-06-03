@@ -93,6 +93,40 @@ def probe_dataset_info(vite_url: str) -> dict | None:
     return None
 
 
+# Module-level cache so a sweep of 100 runs doesn't refetch the multi-MB
+# tile_mapping.json 100 times. Keyed by vite_url; reset on Rust-server
+# restart only matters across sweeps, and we restart the process between
+# datasets anyway.
+_packaging_cache: dict[str, dict] = {}
+
+
+def probe_packaging_info(vite_url: str) -> dict | None:
+    """Best-effort fetch of /api/tile-mapping; returns the static packaging
+    fingerprint (size, bundling stats) without the huge per-tile dict."""
+    if requests is None:
+        return None
+    if vite_url in _packaging_cache:
+        return _packaging_cache[vite_url]
+    try:
+        r = requests.get(f"{vite_url.rstrip('/')}/api/tile-mapping", timeout=30)
+        if not r.ok:
+            return None
+        m = r.json()
+        info = {
+            "num_tiles": m.get("num_tiles"),
+            "num_pir_slots": m.get("num_pir_slots"),
+            "tile_size": m.get("tile_size"),
+            "bundle_grid": m.get("bundle_grid", 1),
+        }
+        if info["num_tiles"] and info["num_pir_slots"]:
+            info["tiles_per_slot"] = round(info["num_tiles"] / info["num_pir_slots"], 3)
+            info["dataset_bytes"] = info["num_pir_slots"] * (info["tile_size"] or 0)
+        _packaging_cache[vite_url] = info
+        return info
+    except Exception:
+        return None
+
+
 async def run_replay(args: argparse.Namespace) -> None:
     workload = json.loads(args.workload.read_text())
     sha = git_sha()
@@ -165,6 +199,7 @@ async def run_replay(args: argparse.Namespace) -> None:
     (run_dir / "trajectory.json").write_text(json.dumps(workload, indent=2))
 
     dataset_info = probe_dataset_info(args.vite_url)
+    packaging = probe_packaging_info(args.vite_url) or {}
     meta = {
         "run_name": run_name,
         "workload": workload["name"],
@@ -180,6 +215,12 @@ async def run_replay(args: argparse.Namespace) -> None:
         "event_count": len(events),
         "dataset": dataset_info,
         "dataset_name": (dataset_info or {}).get("name"),
+        "packaging": packaging,
+        "num_tiles": packaging.get("num_tiles"),
+        "num_pir_slots": packaging.get("num_pir_slots"),
+        "tile_size": packaging.get("tile_size"),
+        "bundle_grid": packaging.get("bundle_grid"),
+        "tiles_per_slot": packaging.get("tiles_per_slot"),
         "stats": stats,
     }
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2))
