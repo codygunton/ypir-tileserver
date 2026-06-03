@@ -25,3 +25,12 @@ export function decodeMultiSlotToPBF(parts) {
     for (const p of parts) { combined.set(p, off); off += p.length; }
     return decodeSlotToPBF(combined);
 }
+
+// For bundled tiles: the slot contains several gzip blobs concatenated
+// (no per-tile length prefix). Mapping tells us (offset, length) of this
+// tile's gzip bytes inside the slot. Slice and inflate directly.
+export function decodeBundledToPBF(slotBytes, offset, length) {
+    if (length <= 0 || offset + length > slotBytes.length) return new ArrayBuffer(0);
+    try { return pako.inflate(slotBytes.subarray(offset, offset + length)).buffer; }
+    catch { return new ArrayBuffer(0); }
+}

@@ -9,8 +9,9 @@ export class TileBatchDispatcher {
         this._coalesceMs = coalesceMs;
     }
 
-    // Enqueue a tile request. Returns Promise<ArrayBuffer> (PBF or empty).
-    enqueue(z, x, y, slots, abortSignal) {
+    // Enqueue a tile request. `mapping` is the raw tile_mapping.json entry
+    // (int, list[int], or {slot,offset,length}). Returns Promise<ArrayBuffer>.
+    enqueue(z, x, y, mapping, abortSignal) {
         const key = `${z}/${x}/${y}`;
         return new Promise((resolve, reject) => {
             if (this._pending.has(key)) {
@@ -29,7 +30,7 @@ export class TileBatchDispatcher {
                 }
                 return;
             }
-            this._pending.set(key, { z, x, y, slots, resolvers: [resolve], reject });
+            this._pending.set(key, { z, x, y, mapping, resolvers: [resolve], reject });
             // Remove from queue if MapLibre cancels before flush
             if (abortSignal) {
                 abortSignal.addEventListener('abort', () => {
@@ -59,15 +60,15 @@ export class TileBatchDispatcher {
         this._pending.clear();
 
         // Build tiles array for processBatch
-        const tiles = batch.map(([key, {z, x, y, slots, resolvers, reject}]) =>
-            ({key, z, x, y, slots, resolvers, reject}));
+        const tiles = batch.map(([key, {z, x, y, mapping, resolvers, reject}]) =>
+            ({key, z, x, y, mapping, resolvers, reject}));
 
         console.log(`Dispatcher flush: ${tiles.length} tile(s)`);
 
         let results;
         try {
             results = await this._backend.processBatch(
-                tiles.map(t => ({key: t.key, z: t.z, x: t.x, y: t.y, slots: t.slots})),
+                tiles.map(t => ({key: t.key, z: t.z, x: t.x, y: t.y, mapping: t.mapping})),
                 null
             );
         } catch (err) {

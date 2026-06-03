@@ -1,7 +1,7 @@
 import init, { YpirClient } from './pkg/ypir_wasm.js';
 import { LRUTileCache } from '/shared/tile-cache.js';
 import { TileBatchDispatcher } from '/shared/tile-batch.js';
-import { decodeSlotToPBF, decodeMultiSlotToPBF } from '/shared/tile-decoder.js';
+import { decodeSlotToPBF, decodeMultiSlotToPBF, decodeBundledToPBF } from '/shared/tile-decoder.js';
 import { initMap } from '/shared/map-setup.js';
 import * as measurement from './src/measurement.js';
 
@@ -21,29 +21,50 @@ let lastQueryMs = 0;
 let currentZoom = 6;
 const tileCache = new LRUTileCache(500 * 1024 * 1024); // 500 MB
 
+// --- Mapping helpers ---
+// `mapping` is the raw tile_mapping.json entry. Three forms:
+//   int                     -> single slot, whole-slot tile (legacy)
+//   list[int]               -> multi-slot whole-tile span (legacy)
+//   {slot, offset, length}  -> bundled into a shared slot (new)
+function mappingSlots(m) {
+    if (Array.isArray(m)) return m;
+    if (typeof m === 'number') return [m];
+    return [m.slot];
+}
+function mappingKind(m) {
+    if (Array.isArray(m)) return m.length > 1 ? 'span' : 'single';
+    if (typeof m === 'number') return 'single';
+    return 'bundled';
+}
+
 // --- YPIR PIR backend ---
 const ypirBackend = {
     processBatch: async (tiles, abortSignal) => {
-        const queryList = [];
-        for (let ti = 0; ti < tiles.length; ti++) {
-            for (const pirIdx of tiles[ti].slots) {
-                queryList.push({ tileIdx: ti, pirIdx });
+        // Dedupe slots across tiles: tiles sharing a bundled slot share one
+        // PIR query. uniqueSlots[i] -> the slot index queried at position i.
+        const slotToIndex = new Map();
+        const uniqueSlots = [];
+        for (const t of tiles) {
+            for (const s of mappingSlots(t.mapping)) {
+                if (!slotToIndex.has(s)) {
+                    slotToIndex.set(s, uniqueSlots.length);
+                    uniqueSlots.push(s);
+                }
             }
         }
+        const B = uniqueSlots.length;
+        console.log(`Dispatcher flush: ${tiles.length} tile(s), ${B} unique slot query(ies)`);
 
-        console.log(`Dispatcher flush: ${tiles.length} tile(s), ${queryList.length} query(ies)`);
-
-        // Generate all query payloads
+        // Generate query payloads
         const uuidBytes = new TextEncoder().encode(sessionUuid);
         const qBytes = pirParams.query_bytes;
         const queryPayloads = [];
-        for (let i = 0; i < queryList.length; i++) {
-            queryPayloads.push(new Uint8Array(client.generate_query(queryList[i].pirIdx)));
+        for (let i = 0; i < B; i++) {
+            queryPayloads.push(new Uint8Array(client.generate_query(uniqueSlots[i])));
             if ((i + 1) % 5 === 0) await new Promise(r => setTimeout(r, 0));
         }
 
-        // Build batch payload: [UUID:36][count:uint32LE][q0][q1]...[qB-1]
-        const B = queryList.length;
+        // Build batch payload: [UUID:36][count:uint32LE][q0]...[qB-1]
         const batchPayload = new Uint8Array(36 + 4 + B * qBytes);
         batchPayload.set(uuidBytes, 0);
         new DataView(batchPayload.buffer).setUint32(36, B, true);
@@ -60,36 +81,43 @@ const ypirBackend = {
         if (!rawResp.ok) throw new Error(`/api/query-batch failed: ${rawResp.status}`);
         const rawBuf = await rawResp.arrayBuffer();
 
-        // Slice response
+        // Slice response into per-slot raw Uint8Arrays, indexed by slot number.
         const rBytes = pirParams.response_bytes;
-        const rawResponses = [];
+        const slotRaw = new Map();
         for (let i = 0; i < B; i++) {
-            rawResponses.push(new Uint8Array(rawBuf, i * rBytes, rBytes));
+            slotRaw.set(uniqueSlots[i], new Uint8Array(rawBuf, i * rBytes, rBytes));
         }
 
-        // Group by tile and decode
-        const slotParts = tiles.map(() => []);
-        for (let i = 0; i < queryList.length; i++) {
-            slotParts[queryList[i].tileIdx].push(rawResponses[i]);
+        // Decode per tile based on mapping kind.
+        const tileSize = pirParams.tile_size;
+        const decodedSlot = new Map();   // slot_idx -> decrypted plaintext Uint8Array
+        function getDecoded(slot) {
+            if (!decodedSlot.has(slot)) {
+                const raw = slotRaw.get(slot);
+                decodedSlot.set(slot, new Uint8Array(client.decode_response(raw)).subarray(0, tileSize));
+            }
+            return decodedSlot.get(slot);
         }
 
         const results = new Map();
-        for (let ti = 0; ti < tiles.length; ti++) {
-            const tile = tiles[ti];
+        for (const t of tiles) {
             let result;
             try {
-                const tileSize = pirParams.tile_size;
-                const decoded = slotParts[ti].map(raw =>
-                    new Uint8Array(client.decode_response(raw)).subarray(0, tileSize)
-                );
-                result = decoded.length > 1
-                    ? decodeMultiSlotToPBF(decoded)
-                    : decodeSlotToPBF(decoded[0]);
+                const kind = mappingKind(t.mapping);
+                if (kind === 'bundled') {
+                    const m = t.mapping;
+                    result = decodeBundledToPBF(getDecoded(m.slot), m.offset, m.length);
+                } else if (kind === 'single') {
+                    const idx = typeof t.mapping === 'number' ? t.mapping : t.mapping[0];
+                    result = decodeSlotToPBF(getDecoded(idx));
+                } else {
+                    result = decodeMultiSlotToPBF(t.mapping.map(getDecoded));
+                }
             } catch (e) {
-                console.error(`[decode] ${tile.key}: ERROR`, e);
+                console.error(`[decode] ${t.key}: ERROR`, e);
                 result = new ArrayBuffer(0);
             }
-            results.set(tile.key, result);
+            results.set(t.key, result);
         }
         return results;
     }
@@ -98,15 +126,31 @@ const ypirBackend = {
 const dispatcher = new TileBatchDispatcher(ypirBackend, 100);
 
 // --- HTTP baseline: fetch raw slots directly, no batching ---
-async function fetchSlotsHttp(slots, abortSignal) {
-    const responses = await Promise.all(slots.map(async (idx) => {
+// Slot-level inflight dedup so multiple tiles sharing one bundled slot only
+// generate one /raw/<idx> request even when concurrently requested.
+const httpSlotInflight = new Map();
+async function fetchSlotHttp(idx, abortSignal) {
+    if (httpSlotInflight.has(idx)) return httpSlotInflight.get(idx);
+    const p = (async () => {
         const r = await fetch(`/raw/${idx}`, { signal: abortSignal });
         if (!r.ok) throw new Error(`/raw/${idx} failed: ${r.status}`);
         return new Uint8Array(await r.arrayBuffer());
-    }));
-    return responses.length > 1
-        ? decodeMultiSlotToPBF(responses)
-        : decodeSlotToPBF(responses[0]);
+    })();
+    httpSlotInflight.set(idx, p);
+    p.finally(() => httpSlotInflight.delete(idx));
+    return p;
+}
+
+async function fetchTileHttp(mapping, abortSignal) {
+    const kind = mappingKind(mapping);
+    if (kind === 'bundled') {
+        const m = mapping;
+        const slot = await fetchSlotHttp(m.slot, abortSignal);
+        return decodeBundledToPBF(slot, m.offset, m.length);
+    }
+    const slots = mappingSlots(mapping);
+    const parts = await Promise.all(slots.map(s => fetchSlotHttp(s, abortSignal)));
+    return parts.length > 1 ? decodeMultiSlotToPBF(parts) : decodeSlotToPBF(parts[0]);
 }
 
 // --- UI helpers ---
@@ -246,6 +290,14 @@ async function initialize() {
             badge.querySelector('strong').textContent = IS_PIR ? 'YPIR PIR Active' : 'HTTP Baseline Active';
             document.getElementById('cpu-metrics').style.display = 'block';
             document.getElementById('measurement-panel').style.display = 'block';
+            document.getElementById('view-toggles').style.display = 'block';
+
+            // Tile boundary overlay via MapLibre's built-in debug flag.
+            const tb = document.getElementById('toggle-tile-boundaries');
+            tb.addEventListener('change', () => {
+                map.showTileBoundaries = tb.checked;
+            });
+
             updateMeasurementPanel();
             window.__experimentReplay.ready = true;
         }, 300);
@@ -304,18 +356,19 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
     }
 
     // High-zoom tiles: PIR or HTTP baseline depending on mode
-    const pirIndex = tileMapping.get(key);
-    if (pirIndex === undefined) return new ArrayBuffer(0);
+    const mapping = tileMapping.get(key);
+    if (mapping === undefined) return new ArrayBuffer(0);
 
-    const slots = Array.isArray(pirIndex) ? pirIndex : [pirIndex];
+    const slotsForTile = mappingSlots(mapping);
+    const kind = mappingKind(mapping);
     const tag = IS_PIR ? 'PIR' : 'HTTP';
-    console.log(`${tag} fetch: ${key} -> ${slots.length} slot(s) [${slots.join(',')}]`);
+    console.log(`${tag} fetch: ${key} -> ${kind} [${slotsForTile.join(',')}]`);
 
     const t0 = performance.now();
     try {
         const pbf = IS_PIR
-            ? await dispatcher.enqueue(z, x, y, slots, abortSignal)
-            : await fetchSlotsHttp(slots, abortSignal);
+            ? await dispatcher.enqueue(z, x, y, mapping, abortSignal)
+            : await fetchTileHttp(mapping, abortSignal);
         if (pbf.byteLength === 0) return pbf;
 
         tileCache.set(key, pbf);
@@ -329,12 +382,13 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
             kind: IS_PIR ? 'pir' : 'http',
             key,
             z,
-            slots: slots.length,
+            slots: slotsForTile.length,
+            mapping_kind: kind,
             latency_ms: Math.round(elapsed),
             bytes_decoded: pbf.byteLength,
             ...trajectoryState(),
         });
-        console.log(`${tag} ${key}: OK ${slots.length} slot(s) in ${elapsed.toFixed(0)}ms`);
+        console.log(`${tag} ${key}: OK ${kind} ${slotsForTile.length} slot(s) in ${elapsed.toFixed(0)}ms`);
         return pbf;
     } catch (e) {
         if (e?.name !== 'AbortError') {
@@ -343,7 +397,8 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
                 kind: IS_PIR ? 'pir' : 'http',
                 key,
                 z,
-                slots: slots.length,
+                slots: slotsForTile.length,
+                mapping_kind: kind,
                 error: e?.name || 'error',
                 ...trajectoryState(),
             });
