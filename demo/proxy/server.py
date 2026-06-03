@@ -144,57 +144,6 @@ def create_app(ypir_host: str, ypir_port: int, tiles_dir: str) -> Flask:
     # their rolling "latest" bucket.
     # ------------------------------------------------------------------ #
 
-    # ------------------------------------------------------------------ #
-    # Non-PIR baseline: serve raw slot bytes from tiles.bin directly.
-    #
-    # Apples-to-apples comparison against the PIR path. Same dataset, same
-    # client-side multi-slot reassembly, only the encryption is removed.
-    # The endpoint is the cost of "trust the server" relative to PIR.
-    # ------------------------------------------------------------------ #
-
-    _tiles_bin_path = os.path.join(tiles_dir, "tiles.bin")
-    _tile_mapping_for_baseline = load_tile_mapping(tiles_dir)
-    _baseline_tile_size = _tile_mapping_for_baseline.get("tile_size")
-    _baseline_num_slots = _tile_mapping_for_baseline.get("num_pir_slots")
-
-    # Detect 16-byte header: prepare_tiles.py emits [num_tiles u64 LE][tile_size u64 LE]
-    # at the top of the file. The Rust server auto-detects; mirror that here.
-    _baseline_header_offset = 0
-    if (
-        _baseline_tile_size
-        and _baseline_num_slots
-        and os.path.isfile(_tiles_bin_path)
-    ):
-        with open(_tiles_bin_path, "rb") as f:
-            header = f.read(16)
-        if len(header) == 16:
-            import struct
-            n, sz = struct.unpack("<QQ", header)
-            if n == _baseline_num_slots and sz == _baseline_tile_size:
-                _baseline_header_offset = 16
-
-    @app.route("/raw/<int:slot_idx>")
-    def raw_slot(slot_idx):
-        if _baseline_tile_size is None or _baseline_num_slots is None:
-            return jsonify({"error": "tile_mapping.json missing tile_size or num_pir_slots"}), 500
-        if slot_idx < 0 or slot_idx >= _baseline_num_slots:
-            return Response(b"", status=404)
-        offset = _baseline_header_offset + slot_idx * _baseline_tile_size
-        try:
-            with open(_tiles_bin_path, "rb") as f:
-                f.seek(offset)
-                data = f.read(_baseline_tile_size)
-            if len(data) != _baseline_tile_size:
-                return Response(b"", status=404)
-            return Response(
-                data,
-                content_type="application/octet-stream",
-                headers={"Cache-Control": "no-store"},
-            )
-        except OSError as exc:
-            logger.error("raw slot %d: %s", slot_idx, exc)
-            return jsonify({"error": str(exc)}), 500
-
     basemap_dir = os.path.join(tiles_dir, "basemap")
     ofm_tilejson_url = os.environ.get(
         "OFM_TILEJSON_URL",
