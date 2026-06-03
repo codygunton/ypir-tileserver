@@ -69,6 +69,11 @@ export function initMap(mappingData, fetchTileFn, opts = {}) {
         style: {
             version: 8,
             name: 'PIR Vector Tiles',
+            // Glyph PBFs for label rendering. Fetched directly from
+            // OpenFreeMap — *not* private. The label data itself comes
+            // from the PIR tile source, but every visible glyph range
+            // leaks to OFM. Documented in the paper as an open hole.
+            glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
             sources: {
                 pir: {
                     type: 'vector',
@@ -202,6 +207,94 @@ export function initMap(mappingData, fetchTileFn, opts = {}) {
                         'line-width': 1,
                         'line-dasharray': [3, 2],
                     },
+                },
+                // ---- Labels (hidden by default; toggled by the Labels checkbox) ----
+                {
+                    id: 'label-water',
+                    type: 'symbol',
+                    source: 'pir',
+                    'source-layer': 'water_name',
+                    layout: {
+                        visibility: 'none',
+                        'text-field': ['get', 'name'],
+                        'text-font': ['Noto Sans Italic'],
+                        'text-size': ['interpolate', ['linear'], ['zoom'], 6, 10, 14, 16],
+                        'text-max-width': 6,
+                    },
+                    paint: {
+                        'text-color': '#8ec5ff',
+                        'text-halo-color': '#0a0a0a',
+                        'text-halo-width': 1.2,
+                    },
+                    metadata: { 'ypir:label': true },
+                },
+                {
+                    id: 'label-place-major',
+                    type: 'symbol',
+                    source: 'pir',
+                    'source-layer': 'place',
+                    filter: ['in', ['get', 'class'], ['literal', ['country', 'state', 'city']]],
+                    minzoom: 3,
+                    layout: {
+                        visibility: 'none',
+                        'text-field': ['get', 'name'],
+                        'text-font': ['Noto Sans Bold'],
+                        'text-size': [
+                            'match', ['get', 'class'],
+                            'country', ['interpolate', ['linear'], ['zoom'], 3, 12, 7, 22],
+                            'state',   ['interpolate', ['linear'], ['zoom'], 4, 11, 8, 18],
+                            'city',    ['interpolate', ['linear'], ['zoom'], 6, 11, 14, 18],
+                            12,
+                        ],
+                        'text-max-width': 8,
+                    },
+                    paint: {
+                        'text-color': '#ffffff',
+                        'text-halo-color': '#0a0a0a',
+                        'text-halo-width': 1.5,
+                    },
+                    metadata: { 'ypir:label': true },
+                },
+                {
+                    id: 'label-place-minor',
+                    type: 'symbol',
+                    source: 'pir',
+                    'source-layer': 'place',
+                    filter: ['in', ['get', 'class'], ['literal', ['town', 'village', 'suburb', 'neighbourhood']]],
+                    minzoom: 9,
+                    layout: {
+                        visibility: 'none',
+                        'text-field': ['get', 'name'],
+                        'text-font': ['Noto Sans Regular'],
+                        'text-size': ['interpolate', ['linear'], ['zoom'], 9, 10, 14, 14],
+                        'text-max-width': 8,
+                    },
+                    paint: {
+                        'text-color': '#d8d8e8',
+                        'text-halo-color': '#0a0a0a',
+                        'text-halo-width': 1.2,
+                    },
+                    metadata: { 'ypir:label': true },
+                },
+                {
+                    id: 'label-road',
+                    type: 'symbol',
+                    source: 'pir',
+                    'source-layer': 'transportation_name',
+                    minzoom: 12,
+                    layout: {
+                        visibility: 'none',
+                        'symbol-placement': 'line',
+                        'text-field': ['get', 'name'],
+                        'text-font': ['Noto Sans Regular'],
+                        'text-size': 11,
+                    },
+                    paint: {
+                        'text-color': '#cfcfd8',
+                        'text-halo-color': '#0a0a0a',
+                        'text-halo-width': 1.0,
+                    },
+                    metadata: { 'ypir:label': true },
                 },
             ],
         },

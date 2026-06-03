@@ -315,6 +315,23 @@ async function initialize() {
                 else map.once('load', apply);
             });
 
+            // Labels toggle: flip visibility on every layer tagged
+            // metadata['ypir:label']. Note: glyph PBFs are fetched from
+            // openfreemap.org — that traffic is *not* private.
+            const lb = document.getElementById('toggle-labels');
+            lb.addEventListener('change', () => {
+                const apply = () => {
+                    const vis = lb.checked ? 'visible' : 'none';
+                    for (const layer of map.getStyle().layers) {
+                        if (layer.metadata && layer.metadata['ypir:label']) {
+                            map.setLayoutProperty(layer.id, 'visibility', vis);
+                        }
+                    }
+                };
+                if (map.isStyleLoaded()) apply();
+                else map.once('load', apply);
+            });
+
             updateMeasurementPanel();
             window.__experimentReplay.ready = true;
         }, 300);
