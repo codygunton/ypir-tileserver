@@ -306,9 +306,13 @@ async function initialize() {
             // Slot boundary toggle.
             const sb = document.getElementById('toggle-slot-boundaries');
             sb.addEventListener('change', () => {
-                map.setLayoutProperty('slot-boundaries', 'visibility',
-                    sb.checked ? 'visible' : 'none');
-                if (sb.checked) refreshSlotBoundaries(map);
+                const apply = () => {
+                    map.setLayoutProperty('slot-boundaries', 'visibility',
+                        sb.checked ? 'visible' : 'none');
+                    if (sb.checked) refreshSlotBoundaries(map);
+                };
+                if (map.getLayer('slot-boundaries')) apply();
+                else map.once('load', apply);
             });
 
             updateMeasurementPanel();
@@ -472,23 +476,30 @@ function slotForTile(z, x, y) {
 }
 
 function setupSlotBoundaryOverlay(map) {
-    map.addSource('slot-boundaries', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] },
-    });
-    map.addLayer({
-        id: 'slot-boundaries',
-        type: 'line',
-        source: 'slot-boundaries',
-        layout: { visibility: 'none' },
-        paint: {
-            'line-color': '#ff5252',
-            'line-width': 2.0,
-            'line-opacity': 0.9,
-        },
-    });
+    const install = () => {
+        if (map.getSource('slot-boundaries')) return;
+        map.addSource('slot-boundaries', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] },
+        });
+        map.addLayer({
+            id: 'slot-boundaries',
+            type: 'line',
+            source: 'slot-boundaries',
+            layout: { visibility: 'none' },
+            paint: {
+                'line-color': '#ff5252',
+                'line-width': 2.0,
+                'line-opacity': 0.9,
+            },
+        });
+    };
+    if (map.isStyleLoaded()) install();
+    else map.once('load', install);
+
     map.on('moveend', () => {
-        if (map.getLayoutProperty('slot-boundaries', 'visibility') === 'visible') {
+        if (map.getLayer('slot-boundaries') &&
+            map.getLayoutProperty('slot-boundaries', 'visibility') === 'visible') {
             refreshSlotBoundaries(map);
         }
     });
