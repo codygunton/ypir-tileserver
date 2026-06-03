@@ -35,6 +35,11 @@ except ImportError:
     print("    playwright install chromium", file=sys.stderr)
     raise
 
+try:
+    import requests
+except ImportError:
+    requests = None  # /api/dataset probing falls back to None
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -72,6 +77,20 @@ async def wait_for_event_settle(page, threshold_s: float = 2.0, timeout_s: float
             print(f"  Settle timeout after {timeout_s:.0f}s; proceeding with {last_count} events")
             return last_count
         await asyncio.sleep(0.25)
+
+
+def probe_dataset_info(vite_url: str) -> dict | None:
+    """Best-effort fetch of /api/dataset so meta.json records which dataset
+    each run was against. Returns None if anything fails."""
+    if requests is None:
+        return None
+    try:
+        r = requests.get(f"{vite_url.rstrip('/')}/api/dataset", timeout=5)
+        if r.ok:
+            return r.json()
+    except Exception:
+        pass
+    return None
 
 
 async def run_replay(args: argparse.Namespace) -> None:
@@ -145,6 +164,7 @@ async def run_replay(args: argparse.Namespace) -> None:
 
     (run_dir / "trajectory.json").write_text(json.dumps(workload, indent=2))
 
+    dataset_info = probe_dataset_info(args.vite_url)
     meta = {
         "run_name": run_name,
         "workload": workload["name"],
@@ -158,6 +178,8 @@ async def run_replay(args: argparse.Namespace) -> None:
         "started_at": ts,
         "replay_elapsed_s": round(replay_elapsed_s, 2),
         "event_count": len(events),
+        "dataset": dataset_info,
+        "dataset_name": (dataset_info or {}).get("name"),
         "stats": stats,
     }
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2))
