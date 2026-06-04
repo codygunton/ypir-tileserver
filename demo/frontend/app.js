@@ -72,6 +72,9 @@ const ypirBackend = {
             batchPayload.set(queryPayloads[i], 36 + 4 + i * qBytes);
         }
 
+        // Count this dispatch against the wire-bytes accounting now, so the
+        // post-dedup unique-slot count is what shows up in stats.
+        measurement.recordPirDispatch(B);
         const rawResp = await fetch('/api/query-batch', {
             method: 'POST',
             body: batchPayload,
@@ -131,6 +134,9 @@ const dispatcher = new TileBatchDispatcher(ypirBackend, 100);
 const httpSlotInflight = new Map();
 async function fetchSlotHttp(idx, abortSignal) {
     if (httpSlotInflight.has(idx)) return httpSlotInflight.get(idx);
+    // This is the actual network fetch; count it before the inflight
+    // promise is registered so dedup-served callers don't inflate the tally.
+    measurement.recordHttpFetch();
     const p = (async () => {
         const r = await fetch(`/raw/${idx}`, { signal: abortSignal });
         if (!r.ok) throw new Error(`/raw/${idx} failed: ${r.status}`);

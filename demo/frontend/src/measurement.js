@@ -11,6 +11,17 @@ const events = [];
 let wireSizes = { query_bytes: 0, response_bytes: 0 };
 let mode = 'pir';
 
+// Network counters that account for dispatcher / inflight dedup, so wire
+// bytes don't double-count shared slots in bundled packaging.
+const counters = {
+  pirDispatches: 0,    // number of /api/query-batch POSTs issued
+  pirQueriesSent: 0,   // sum of uniqueSlots.length across all dispatches
+  httpFetches: 0,      // actual /raw/<idx> requests issued (post-dedup)
+};
+
+// PIR batch envelope: 36 bytes UUID + 4 bytes count
+const PIR_BATCH_HEADER_BYTES = 40;
+
 export function setMode(m) {
   mode = m;
 }
@@ -25,6 +36,18 @@ export function recordQuery(ev) {
     mode,
     ...ev,
   });
+}
+
+// Called from ypirBackend.processBatch with the post-dedup unique-slot count.
+export function recordPirDispatch(numQueries) {
+  counters.pirDispatches += 1;
+  counters.pirQueriesSent += numQueries;
+}
+
+// Called from fetchSlotHttp at the exact moment an actual /raw/ fetch is fired,
+// not when an inflight-cached promise is returned to a second caller.
+export function recordHttpFetch() {
+  counters.httpFetches += 1;
 }
 
 export function stats() {
@@ -44,9 +67,22 @@ export function stats() {
     latencies.length ? latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * p))] : 0;
 
   const slotsTotal = fetchEvents.reduce((s, e) => s + (e.slots || 0), 0);
-  const bytesUp = slotsTotal * wireSizes.query_bytes;
-  const bytesDown = slotsTotal * wireSizes.response_bytes;
   const bytesDecoded = fetchEvents.reduce((s, e) => s + (e.bytes_decoded || 0), 0);
+
+  // Wire bytes from network counters, NOT from summing per-tile slots.
+  // Per-tile slots over-count when multiple tiles share one PIR query
+  // (bundled mode) or one HTTP fetch (httpSlotInflight dedup).
+  let bytesUp, bytesDown;
+  if (mode === 'pir') {
+    bytesUp =
+      counters.pirDispatches * PIR_BATCH_HEADER_BYTES +
+      counters.pirQueriesSent * wireSizes.query_bytes;
+    bytesDown = counters.pirQueriesSent * wireSizes.response_bytes;
+  } else {
+    // HTTP GET upload is just a URL line + headers; negligible.
+    bytesUp = 0;
+    bytesDown = counters.httpFetches * wireSizes.response_bytes;
+  }
 
   return {
     mode,
@@ -61,6 +97,9 @@ export function stats() {
     bytesUp,
     bytesDown,
     bytesDecoded,
+    pirDispatches: counters.pirDispatches,
+    pirQueriesSent: counters.pirQueriesSent,
+    httpFetches: counters.httpFetches,
   };
 }
 
@@ -92,6 +131,9 @@ export function downloadCsv() {
 
 export function clearEvents() {
   events.length = 0;
+  counters.pirDispatches = 0;
+  counters.pirQueriesSent = 0;
+  counters.httpFetches = 0;
 }
 
 export function eventCount() {
